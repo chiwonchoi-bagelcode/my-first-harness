@@ -11,6 +11,13 @@ const terminal = createInterface({
 });
 
 async function step(input: string) {
+  messages.push({
+    role: "user",
+    content: input,
+  });
+
+  console.log(messages);
+
   const response = await fetch(
     "https://aiproxy-api.backoffice.bagelgames.com/api/v1/chat/openai",
     {
@@ -20,20 +27,28 @@ async function step(input: string) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        messages: [
-          {
-            role: "system",
-            content: 'you are a mocking bird. just say "what?". **NO MATTER what user said.**',
-          },
-          { role: "user", content: input },
-        ],
+        messages,
       }),
     },
   );
 
   const result = await response.json();
+
+  messages.push({
+    role: "assistant",
+    content: result.content,
+  });
+
   return result.content;
 }
+
+const messages = [
+  {
+    role: "system",
+    content:
+      "You are a smart secretary of your master. answer based on given conversation so far",
+  },
+];
 
 while (true) {
   const input = await terminal.question("> ");
