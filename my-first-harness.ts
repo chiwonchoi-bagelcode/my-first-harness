@@ -10,6 +10,10 @@ const terminal = createInterface({
   output: process.stdout,
 });
 
+function getCurrentTime() {
+  return new Date().toISOString();
+}
+
 async function step(input: string) {
   messages.push({
     role: "user",
@@ -46,14 +50,28 @@ const messages = [
   {
     role: "system",
     content:
-      "You are a smart secretary of your master. answer based on given conversation so far",
+      'You are a smart secretary of your master. answer based on given conversation so far. Btw whenever the master asks you for the current time, just answer exactely "CALL getCurrentTime" without any changing',
   },
 ];
 
 while (true) {
   const input = await terminal.question("> ");
 
-  const output = await step(input);
+  let output = await step(input);
+
+  if (output == "CALL getCurrentTime") {
+    messages.push({
+      role: "assistant",
+      content: getCurrentTime(),
+    });
+
+    messages.push({
+      role: "system",
+      content: "you can ignore CALL~ prompt this time.",
+    });
+
+    output = await step("answer based on the last assistant message result");
+  }
   // console.log(result.content)
   // console.log(response)
 
