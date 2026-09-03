@@ -10,9 +10,8 @@ const terminal = createInterface({
   output: process.stdout,
 })
 
-while(true) {
-  const input = await terminal.question('> ')
 
+async function step(input: string) {
   const response = await fetch(
     'https://aiproxy-api.backoffice.bagelgames.com/api/v1/chat/openai',
     {
@@ -27,10 +26,17 @@ while(true) {
     },
   )
 
+  const result = await response.json();
+  return result.content
+}
+
+while(true) {
+  const input = await terminal.question('> ')
+
+  const output = await step(input)
   // console.log(result.content)
   // console.log(response)
 
 
-  const result = await response.json()
-  console.log(result.content)
+  console.log(output)
 }
