@@ -14,12 +14,7 @@ function getCurrentTime() {
   return new Date().toISOString();
 }
 
-async function step(input: string) {
-  messages.push({
-    role: "user",
-    content: input,
-  });
-
+async function step() {
   console.log(messages);
 
   const response = await fetch(
@@ -46,6 +41,28 @@ async function step(input: string) {
   return result.content;
 }
 
+async function turn(input: string) {
+  messages.push({
+    role: "user",
+    content: input,
+  });
+
+  while (true) {
+    const output = await step();
+
+    if (output !== "CALL getCurrentTime") {
+      return output;
+    }
+
+    const toolResult = getCurrentTime();
+
+    messages.push({
+      role: "user",
+      content: `TOOL RESULT getCurrentTime: ${toolResult}`,
+    });
+  }
+}
+
 const messages = [
   {
     role: "system",
@@ -57,21 +74,8 @@ const messages = [
 while (true) {
   const input = await terminal.question("> ");
 
-  let output = await step(input);
+  let output = await turn(input);
 
-  if (output == "CALL getCurrentTime") {
-    messages.push({
-      role: "assistant",
-      content: getCurrentTime(),
-    });
-
-    messages.push({
-      role: "system",
-      content: "you can ignore CALL~ prompt this time.",
-    });
-
-    output = await step("answer based on the last assistant message result");
-  }
   // console.log(result.content)
   // console.log(response)
 
