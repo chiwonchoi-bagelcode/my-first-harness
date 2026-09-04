@@ -154,7 +154,7 @@ skillManager.register(aggressiveGreeting);
 // ===================== AssemblingContext ===================
 function assembleContext() {
   const runtimeContext = {
-    role: "user",
+    role: "system",
     content: `현재 작업 디렉토리: ${process.cwd()}`,
   };
 
@@ -222,6 +222,10 @@ async function turn(input: string) {
       return choice.message.content;
     }
 
+    if (choice.message.content) {
+      console.log(choice.message.content);
+    }
+
     // console.dir(output, { depth: null });
 
     for (const toolCall of choice.message.tool_calls) {
@@ -243,7 +247,16 @@ async function turn(input: string) {
 const messages: any[] = [
   {
     role: "system",
-    content: `너는 마스터를 돕는 비서다. 마스터의 요구를 만족하라.`,
+    content: `너는 마스터를 돕는 비서다. 마스터의 요구를 만족하라.
+
+너는 여러 step에 걸쳐 작업할 수 있다.
+
+- assistant content는 즉시 사용자에게 출력된다.
+- tool_calls는 content가 출력된 다음 실행된다.
+- 툴 결과는 다음 step에서 전달된다.
+- 사용자가 중간 보고를 요청하면, 실제 툴 결과를 받은 뒤 다음 작업을 시작하기 전에 그 결과를 보고하라.
+- 실행하지 않은 결과를 미리 보고하거나, 모든 작업이 끝난 뒤 실시간으로 보고한 것처럼 재구성하지 마라.
+`,
   },
 ];
 
