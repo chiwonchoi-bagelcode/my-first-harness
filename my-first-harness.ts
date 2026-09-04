@@ -282,6 +282,11 @@ const messages: any[] = [
 while (true) {
   const input = await terminal.question("> ");
 
+  if (input.trim() === "/quit") {
+    terminal.close();
+    break;
+  }
+
   let output = await turn(input);
 
   // console.log(result.content)
