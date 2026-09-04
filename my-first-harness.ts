@@ -117,9 +117,24 @@ toolManager.register({
   execute: (arguments_: any) => getOtherLLMsOpinion(arguments_.ask),
 });
 
+// ===================== AssemblingContext ===================
+function assembleContext() {
+  const runtimeContext = {
+    role: "user",
+    content: `현재 작업 디렉토리: ${process.cwd()}`,
+  };
+
+  return {
+    messages: [...messages, runtimeContext],
+    tools: toolManager.getDefinitions(),
+  };
+}
+
 // ======================= step ==============================
 async function step() {
-  console.log(messages);
+  // console.log(messages);
+
+  const context = assembleContext();
 
   const response = await fetch(
     "https://aiproxy-api.backoffice.bagelgames.com/openai/v1/chat/completions",
@@ -131,8 +146,8 @@ async function step() {
       },
       body: JSON.stringify({
         model: "gpt-4o",
-        messages,
-        tools: toolManager.getDefinitions(),
+        messages: context.messages,
+        tools: context.tools,
       }),
     },
   );
