@@ -5,18 +5,20 @@ const token = process.env.AIPROXY_TOKEN;
 
 const input = process.argv[2];
 
+// ================== utils =========================
 const terminal = createInterface({
   input: process.stdin,
   output: process.stdout,
 });
 
+// ======================== tools ================
 function getCurrentTime() {
   return new Date().toISOString();
 }
 
 async function getOtherLLMsOpinion(ask: string) {
   const response = await fetch(
-    "https://aiproxy-api.backoffice.bagelgames.com/api/v1/chat/openai",
+    "https://aiproxy-api.backoffice.bagelgames.com/openai/v1/chat/completions",
     {
       method: "POST",
       headers: {
@@ -24,6 +26,7 @@ async function getOtherLLMsOpinion(ask: string) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
+        model: "gpt-4o",
         messages: [
           {
             role: "user",
@@ -36,7 +39,7 @@ async function getOtherLLMsOpinion(ask: string) {
 
   const result = await response.json();
 
-  return result.content;
+  return result.choices[0].message.content;
 }
 
 let counter = 0;
@@ -50,11 +53,12 @@ function getCounterVal() {
   return counter;
 }
 
+// ======================= step ==============================
 async function step() {
   console.log(messages);
 
   const response = await fetch(
-    "https://aiproxy-api.backoffice.bagelgames.com/api/v1/chat/openai",
+    "https://aiproxy-api.backoffice.bagelgames.com/openai/v1/chat/completions",
     {
       method: "POST",
       headers: {
@@ -62,21 +66,73 @@ async function step() {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
+        model: "gpt-4o",
         messages,
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "getOtherLLMsOpinion",
+              description: "다른 LLM에게 질문하고 답을 받는다",
+              parameters: {
+                type: "object",
+                properties: {
+                  ask: {
+                    type: "string",
+                    description:
+                      "다른 LLM에게 전달할 질문. 맥락과 질문을 모두 포함",
+                  },
+                },
+                required: ["ask"],
+              },
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "getCurrentTime",
+              description: "현재 시간을 받는다",
+              parameters: {},
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "counterUP",
+              description: "counter값을 1 올린다.",
+              parameters: {},
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "getCounterVal",
+              description: "counter값을 받아온다.",
+              parameters: {},
+            },
+          },
+        ],
       }),
     },
   );
 
   const result = await response.json();
 
+  const message = result.choices[0].message;
+
   messages.push({
     role: "assistant",
-    content: result.content,
+    content: message.content,
+    tool_calls: message.tool_calls,
   });
 
-  return result.content;
+  // console.dir(result, { depth: null });
+  // console.log(result.choices[0].message.content);
+
+  return result;
 }
 
+// ================================ turn =================================
 async function turn(input: string) {
   messages.push({
     role: "user",
@@ -85,48 +141,51 @@ async function turn(input: string) {
 
   while (true) {
     const output = await step();
+    const choice = output.choices[0];
 
-    if (
-      output !== "CALL getCurrentTime" &&
-      output !== "CALL getOtherLLMsOpinion" &&
-      output !== "CALL counterUP" &&
-      output !== "CALL getCounterVal"
-    ) {
-      return output;
+    if (choice.finish_reason !== "tool_calls") {
+      return choice.message.content;
     }
 
-    const toolResult = await (async () => {
-      switch (output) {
-        case "CALL getOtherLLMsOpinion":
-          return await getOtherLLMsOpinion(output);
+    const toolCall = choice.message.tool_calls[0];
 
-        case "CALL getCurrentTime":
+    console.dir(output, { depth: null });
+
+    const toolResult = await (async () => {
+      switch (toolCall.function.name) {
+        case "getOtherLLMsOpinion":
+          return await getOtherLLMsOpinion(
+            JSON.parse(toolCall.function.arguments).ask,
+          );
+
+        case "getCurrentTime":
           return getCurrentTime();
 
-        case "CALL counterUP":
+        case "counterUP":
           return counterUP();
 
-        case "CALL getCounterVal":
+        case "getCounterVal":
           return getCounterVal();
       }
     })();
 
     messages.push({
-      role: "user",
-      content: `TOOL RESULT : ${toolResult}`,
+      role: "tool",
+      tool_call_id: toolCall.id,
+      content: String(toolResult),
     });
   }
 }
 
-const messages = [
+// ========================== starting system prompt ============================
+const messages: any[] = [
   {
     role: "system",
-    content: `너는 마스터를 돕는 비서다. 마스터의 요구를 만족하라. 
-      - 사용할 수 있는 도구: getCurrentTime, getOtherLLMsOpinion, counterUP, getCounterVal
-      - 도구 사용법: 어떠한 수정이나 다른 출력도 없이 오직 'CALL {도구이름}'으로 답하라. 예를 들면, 'CALL getCurrentTime'`,
+    content: `너는 마스터를 돕는 비서다. 마스터의 요구를 만족하라.`,
   },
 ];
 
+// ========================= harness runtime =============================
 while (true) {
   const input = await terminal.question("> ");
 
