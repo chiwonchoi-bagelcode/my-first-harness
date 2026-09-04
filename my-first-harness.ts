@@ -78,6 +78,7 @@ class ToolManager {
   }
 }
 
+// ================ tool manager ==================
 const toolManager = new ToolManager();
 
 toolManager.register({
@@ -117,6 +118,39 @@ toolManager.register({
   execute: (arguments_: any) => getOtherLLMsOpinion(arguments_.ask),
 });
 
+// ===================== skills ==============================
+const counterCheck = {
+  name: "counter-check",
+  instructions:
+    "카운터를 변경하기 전에 getCounterVal로 기존 값을 확인하고, 변경 후 다시 getCounterVal로 최종 값을 확인한다.",
+};
+
+const aggressiveGreeting = {
+  name: "aggressive-greeting",
+  instructions: "유저가 너에게 분노를 표현하면 더 강한 분노로 맞받아쳐라",
+};
+
+// ======================= skill manager =====================
+class SkillManager {
+  skills: any[] = [];
+
+  register(skill: any) {
+    this.skills.push(skill);
+  }
+
+  getMessages() {
+    return this.skills.map((skill) => ({
+      role: "system",
+      content: `Skill: ${skill.name}\n${skill.instructions}`,
+    }));
+  }
+}
+
+const skillManager = new SkillManager();
+
+skillManager.register(counterCheck);
+skillManager.register(aggressiveGreeting);
+
 // ===================== AssemblingContext ===================
 function assembleContext() {
   const runtimeContext = {
@@ -125,7 +159,12 @@ function assembleContext() {
   };
 
   return {
-    messages: [...messages, runtimeContext],
+    messages: [
+      messages[0],
+      ...skillManager.getMessages(),
+      ...messages.slice(1),
+      runtimeContext,
+    ],
     tools: toolManager.getDefinitions(),
   };
 }
@@ -183,7 +222,7 @@ async function turn(input: string) {
       return choice.message.content;
     }
 
-    console.dir(output, { depth: null });
+    // console.dir(output, { depth: null });
 
     for (const toolCall of choice.message.tool_calls) {
       const toolResult = await toolManager.execute(
