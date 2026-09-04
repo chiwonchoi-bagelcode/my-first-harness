@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 
 import { registerCounterFeature } from "./tools/counter.ts";
@@ -7,6 +8,7 @@ import { registerOtherLLMTools } from "./tools/other-llm.ts";
 import { registerFilesystemTools } from "./tools/filesystem.ts";
 import { registerShellTools } from "./tools/shell.ts";
 import { loadSkills } from "./skill-loader.ts";
+import { loadSession, saveSession } from "./session-store.ts";
 
 const token = process.env.AIPROXY_TOKEN;
 
@@ -71,7 +73,7 @@ registerShellTools(toolManager);
 await loadSkills(skillManager);
 
 // ===================== AssemblingContext ===================
-function assembleContext() {
+function assembleContext(session: any) {
   const runtimeContext = {
     role: "system",
     content: `현재 작업 디렉토리: ${process.cwd()}`,
@@ -79,9 +81,9 @@ function assembleContext() {
 
   return {
     messages: [
-      messages[0],
+      session.messages[0],
       ...skillManager.getMessages(),
-      ...messages.slice(1),
+      ...session.messages.slice(1),
       runtimeContext,
     ],
     tools: toolManager.getDefinitions(),
@@ -89,10 +91,10 @@ function assembleContext() {
 }
 
 // ======================= step ==============================
-async function step() {
-  // console.log(messages);
+async function step(session: any) {
+  // console.log(session.messages);
 
-  const context = assembleContext();
+  const context = assembleContext(session);
 
   const response = await fetch(
     "https://aiproxy-api.backoffice.bagelgames.com/openai/v1/chat/completions",
@@ -114,7 +116,7 @@ async function step() {
 
   const message = result.choices[0].message;
 
-  messages.push({
+  session.messages.push({
     role: "assistant",
     content: message.content,
     tool_calls: message.tool_calls,
@@ -127,14 +129,14 @@ async function step() {
 }
 
 // ================================ turn =================================
-async function turn(input: string) {
-  messages.push({
+async function turn(session: any, input: string) {
+  session.messages.push({
     role: "user",
     content: input,
   });
 
   while (true) {
-    const output = await step();
+    const output = await step(session);
     const choice = output.choices[0];
 
     if (choice.finish_reason !== "tool_calls") {
@@ -153,7 +155,7 @@ async function turn(input: string) {
         JSON.parse(toolCall.function.arguments),
       );
 
-      messages.push({
+      session.messages.push({
         role: "tool",
         tool_call_id: toolCall.id,
         content: String(toolResult),
@@ -162,11 +164,12 @@ async function turn(input: string) {
   }
 }
 
-// ========================== starting system prompt ============================
-const messages: any[] = [
-  {
-    role: "system",
-    content: `너는 마스터를 돕는 비서다. 마스터의 요구를 만족하라.
+// ============================== session ======================================
+function createSession() {
+  const messages: any[] = [
+    {
+      role: "system",
+      content: `너는 마스터를 돕는 비서다. 마스터의 요구를 만족하라.
 
 너는 여러 step에 걸쳐 작업할 수 있다.
 
@@ -178,10 +181,20 @@ const messages: any[] = [
 
 think deep, step by step.
 `,
-  },
-];
+    },
+  ];
+
+  return {
+    id: randomUUID(),
+    messages,
+  };
+}
+
+let session = createSession();
 
 // ========================= harness runtime =============================
+console.log(`session: ${session.id}`);
+
 while (true) {
   const input = await terminal.question("> ");
 
@@ -190,7 +203,24 @@ while (true) {
     break;
   }
 
-  let output = await turn(input);
+  if (input.trim() === "/new") {
+    session = createSession();
+    console.log(`new session: ${session.id}`);
+    continue;
+  }
+
+  if (input.startsWith("/resume ")) {
+    const id = input.slice("/resume ".length).trim();
+
+    session = await loadSession(id);
+
+    console.log(`resumed session: ${session.id}`);
+    continue;
+  }
+
+  let output = await turn(session, input);
+
+  await saveSession(session);
 
   // console.log(result.content)
   // console.log(response)

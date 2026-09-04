@@ -7,6 +7,9 @@ node_modules/
 .env.*
 !.env.example
 
+# Session data
+.my-first-harness/sessions/
+
 # Build and test output
 dist/
 coverage/
