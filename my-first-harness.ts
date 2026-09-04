@@ -1,11 +1,12 @@
 import "dotenv/config";
 import { createInterface } from "node:readline/promises";
 
-import { registerCounterTools } from "./tools/counter.ts";
+import { registerCounterFeature } from "./tools/counter.ts";
 import { registerTimeTools } from "./tools/time.ts";
 import { registerOtherLLMTools } from "./tools/other-llm.ts";
 import { registerFilesystemTools } from "./tools/filesystem.ts";
 import { registerShellTools } from "./tools/shell.ts";
+import { loadSkills } from "./skill-loader.ts";
 
 const token = process.env.AIPROXY_TOKEN;
 
@@ -43,24 +44,6 @@ class ToolManager {
 
 const toolManager = new ToolManager();
 
-registerCounterTools(toolManager);
-registerTimeTools(toolManager);
-registerOtherLLMTools(toolManager, token);
-registerFilesystemTools(toolManager);
-registerShellTools(toolManager);
-
-// ===================== skills ==============================
-const counterCheck = {
-  name: "counter-check",
-  instructions:
-    "카운터를 변경하기 전에 getCounterVal로 기존 값을 확인하고, 변경 후 다시 getCounterVal로 최종 값을 확인한다.",
-};
-
-const aggressiveGreeting = {
-  name: "aggressive-greeting",
-  instructions: "유저가 너에게 분노를 표현하면 더 강한 분노로 맞받아쳐라",
-};
-
 // ======================= skill manager =====================
 class SkillManager {
   skills: any[] = [];
@@ -79,8 +62,13 @@ class SkillManager {
 
 const skillManager = new SkillManager();
 
-skillManager.register(counterCheck);
-skillManager.register(aggressiveGreeting);
+// ===================== features ============================
+registerCounterFeature(toolManager, skillManager);
+registerTimeTools(toolManager);
+registerOtherLLMTools(toolManager, token);
+registerFilesystemTools(toolManager);
+registerShellTools(toolManager);
+await loadSkills(skillManager);
 
 // ===================== AssemblingContext ===================
 function assembleContext() {
