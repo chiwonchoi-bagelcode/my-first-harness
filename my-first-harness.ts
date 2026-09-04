@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { createInterface } from "node:readline/promises";
+import { readFile } from "node:fs/promises";
 
 const token = process.env.AIPROXY_TOKEN;
 
@@ -12,6 +13,7 @@ const terminal = createInterface({
 });
 
 // ======================== tools ================
+
 function getCurrentTime() {
   return new Date().toISOString();
 }
@@ -116,6 +118,22 @@ toolManager.register({
     required: ["ask"],
   },
   execute: (arguments_: any) => getOtherLLMsOpinion(arguments_.ask),
+});
+
+toolManager.register({
+  name: "readTextFile",
+  description: "텍스트 파일의 내용을 읽는다.",
+  parameters: {
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description: "읽을 파일 경로",
+      },
+    },
+    required: ["path"],
+  },
+  execute: (arguments_: any) => readFile(arguments_.path, "utf8"),
 });
 
 // ===================== skills ==============================
