@@ -4,6 +4,8 @@ import { readFile, readdir, writeFile } from "node:fs/promises";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 
+import { registerCounterTools } from "./tools/counter.ts";
+
 const token = process.env.AIPROXY_TOKEN;
 
 const execAsync = promisify(exec);
@@ -44,17 +46,6 @@ async function getOtherLLMsOpinion(ask: string) {
   const result = await response.json();
 
   return result.choices[0].message.content;
-}
-
-let counter = 0;
-function counterUP() {
-  counter++;
-
-  return "successfully increased counter";
-}
-
-function getCounterVal() {
-  return counter;
 }
 
 async function listDirectory(path: string) {
@@ -103,25 +94,13 @@ class ToolManager {
 
 const toolManager = new ToolManager();
 
+registerCounterTools(toolManager);
+
 toolManager.register({
   name: "getCurrentTime",
   description: "현재 시간을 받는다",
   parameters: {},
   execute: getCurrentTime,
-});
-
-toolManager.register({
-  name: "counterUP",
-  description: "counter값을 1 올린다.",
-  parameters: {},
-  execute: counterUP,
-});
-
-toolManager.register({
-  name: "getCounterVal",
-  description: "counter값을 받아온다.",
-  parameters: {},
-  execute: getCounterVal,
 });
 
 toolManager.register({
@@ -347,6 +326,8 @@ const messages: any[] = [
 - 툴 결과는 다음 step에서 전달된다.
 - 사용자가 중간 보고를 요청하면, 실제 툴 결과를 받은 뒤 다음 작업을 시작하기 전에 그 결과를 보고하라.
 - 실행하지 않은 결과를 미리 보고하거나, 모든 작업이 끝난 뒤 실시간으로 보고한 것처럼 재구성하지 마라.
+
+think deep, step by step.
 `,
   },
 ];
