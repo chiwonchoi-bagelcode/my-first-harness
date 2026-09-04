@@ -53,6 +53,70 @@ function getCounterVal() {
   return counter;
 }
 
+class ToolManager {
+  tools: any[] = [];
+
+  register(tool: any) {
+    this.tools.push(tool);
+  }
+
+  getDefinitions() {
+    return this.tools.map((tool) => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      },
+    }));
+  }
+
+  async execute(name: string, arguments_: any) {
+    const tool = this.tools.find((tool) => tool.name === name);
+
+    return await tool.execute(arguments_);
+  }
+}
+
+const toolManager = new ToolManager();
+
+toolManager.register({
+  name: "getCurrentTime",
+  description: "현재 시간을 받는다",
+  parameters: {},
+  execute: getCurrentTime,
+});
+
+toolManager.register({
+  name: "counterUP",
+  description: "counter값을 1 올린다.",
+  parameters: {},
+  execute: counterUP,
+});
+
+toolManager.register({
+  name: "getCounterVal",
+  description: "counter값을 받아온다.",
+  parameters: {},
+  execute: getCounterVal,
+});
+
+toolManager.register({
+  name: "getOtherLLMsOpinion",
+  description: "다른 LLM에게 질문하고 답을 받는다",
+  parameters: {
+    type: "object",
+    properties: {
+      ask: {
+        type: "string",
+        description: "다른 LLM에게 전달할 질문. 맥락과 질문을 모두 포함",
+      },
+    },
+    required: ["ask"],
+  },
+  execute: (arguments_: any) => getOtherLLMsOpinion(arguments_.ask),
+});
+
 // ======================= step ==============================
 async function step() {
   console.log(messages);
@@ -68,50 +132,7 @@ async function step() {
       body: JSON.stringify({
         model: "gpt-4o",
         messages,
-        tools: [
-          {
-            type: "function",
-            function: {
-              name: "getOtherLLMsOpinion",
-              description: "다른 LLM에게 질문하고 답을 받는다",
-              parameters: {
-                type: "object",
-                properties: {
-                  ask: {
-                    type: "string",
-                    description:
-                      "다른 LLM에게 전달할 질문. 맥락과 질문을 모두 포함",
-                  },
-                },
-                required: ["ask"],
-              },
-            },
-          },
-          {
-            type: "function",
-            function: {
-              name: "getCurrentTime",
-              description: "현재 시간을 받는다",
-              parameters: {},
-            },
-          },
-          {
-            type: "function",
-            function: {
-              name: "counterUP",
-              description: "counter값을 1 올린다.",
-              parameters: {},
-            },
-          },
-          {
-            type: "function",
-            function: {
-              name: "getCounterVal",
-              description: "counter값을 받아온다.",
-              parameters: {},
-            },
-          },
-        ],
+        tools: toolManager.getDefinitions(),
       }),
     },
   );
@@ -147,33 +168,20 @@ async function turn(input: string) {
       return choice.message.content;
     }
 
-    const toolCall = choice.message.tool_calls[0];
-
     console.dir(output, { depth: null });
 
-    const toolResult = await (async () => {
-      switch (toolCall.function.name) {
-        case "getOtherLLMsOpinion":
-          return await getOtherLLMsOpinion(
-            JSON.parse(toolCall.function.arguments).ask,
-          );
+    for (const toolCall of choice.message.tool_calls) {
+      const toolResult = await toolManager.execute(
+        toolCall.function.name,
+        JSON.parse(toolCall.function.arguments),
+      );
 
-        case "getCurrentTime":
-          return getCurrentTime();
-
-        case "counterUP":
-          return counterUP();
-
-        case "getCounterVal":
-          return getCounterVal();
-      }
-    })();
-
-    messages.push({
-      role: "tool",
-      tool_call_id: toolCall.id,
-      content: String(toolResult),
-    });
+      messages.push({
+        role: "tool",
+        tool_call_id: toolCall.id,
+        content: String(toolResult),
+      });
+    }
   }
 }
 
