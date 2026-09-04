@@ -1,70 +1,19 @@
 import "dotenv/config";
 import { createInterface } from "node:readline/promises";
-import { readFile, readdir, writeFile } from "node:fs/promises";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 
 import { registerCounterTools } from "./tools/counter.ts";
+import { registerTimeTools } from "./tools/time.ts";
+import { registerOtherLLMTools } from "./tools/other-llm.ts";
+import { registerFilesystemTools } from "./tools/filesystem.ts";
+import { registerShellTools } from "./tools/shell.ts";
 
 const token = process.env.AIPROXY_TOKEN;
-
-const execAsync = promisify(exec);
 
 // ================== utils =========================
 const terminal = createInterface({
   input: process.stdin,
   output: process.stdout,
 });
-
-// ======================== tools ================
-
-function getCurrentTime() {
-  return new Date().toISOString();
-}
-
-async function getOtherLLMsOpinion(ask: string) {
-  const response = await fetch(
-    "https://aiproxy-api.backoffice.bagelgames.com/openai/v1/chat/completions",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o",
-        messages: [
-          {
-            role: "user",
-            content: ask,
-          },
-        ],
-      }),
-    },
-  );
-
-  const result = await response.json();
-
-  return result.choices[0].message.content;
-}
-
-async function listDirectory(path: string) {
-  const files = await readdir(path);
-
-  return files.join("\n");
-}
-
-async function writeTextFile(path: string, content: string) {
-  await writeFile(path, content, "utf8");
-
-  return `wrote ${path}`;
-}
-
-async function runCommand(command: string) {
-  const result = await execAsync(command);
-
-  return result.stdout + result.stderr;
-}
 
 // ================ tool manager ==================
 class ToolManager {
@@ -95,98 +44,10 @@ class ToolManager {
 const toolManager = new ToolManager();
 
 registerCounterTools(toolManager);
-
-toolManager.register({
-  name: "getCurrentTime",
-  description: "현재 시간을 받는다",
-  parameters: {},
-  execute: getCurrentTime,
-});
-
-toolManager.register({
-  name: "getOtherLLMsOpinion",
-  description: "다른 LLM에게 질문하고 답을 받는다",
-  parameters: {
-    type: "object",
-    properties: {
-      ask: {
-        type: "string",
-        description: "다른 LLM에게 전달할 질문. 맥락과 질문을 모두 포함",
-      },
-    },
-    required: ["ask"],
-  },
-  execute: (arguments_: any) => getOtherLLMsOpinion(arguments_.ask),
-});
-
-toolManager.register({
-  name: "readTextFile",
-  description: "텍스트 파일의 내용을 읽는다.",
-  parameters: {
-    type: "object",
-    properties: {
-      path: {
-        type: "string",
-        description: "읽을 파일 경로",
-      },
-    },
-    required: ["path"],
-  },
-  execute: (arguments_: any) => readFile(arguments_.path, "utf8"),
-});
-
-toolManager.register({
-  name: "listDirectory",
-  description: "폴더 안의 파일과 폴더 목록을 확인한다.",
-  parameters: {
-    type: "object",
-    properties: {
-      path: {
-        type: "string",
-        description: "확인할 폴더 경로",
-      },
-    },
-    required: ["path"],
-  },
-  execute: (arguments_: any) => listDirectory(arguments_.path),
-});
-
-toolManager.register({
-  name: "writeTextFile",
-  description: "텍스트 파일을 생성하거나 기존 내용을 덮어쓴다.",
-  parameters: {
-    type: "object",
-    properties: {
-      path: {
-        type: "string",
-        description: "작성할 파일 경로",
-      },
-      content: {
-        type: "string",
-        description: "파일에 작성할 전체 내용",
-      },
-    },
-    required: ["path", "content"],
-  },
-  execute: (arguments_: any) =>
-    writeTextFile(arguments_.path, arguments_.content),
-});
-
-toolManager.register({
-  name: "runCommand",
-  description: "현재 작업 디렉토리에서 터미널 명령을 실행한다.",
-  parameters: {
-    type: "object",
-    properties: {
-      command: {
-        type: "string",
-        description: "실행할 터미널 명령",
-      },
-    },
-    required: ["command"],
-  },
-  execute: (arguments_: any) => runCommand(arguments_.command),
-});
+registerTimeTools(toolManager);
+registerOtherLLMTools(toolManager, token);
+registerFilesystemTools(toolManager);
+registerShellTools(toolManager);
 
 // ===================== skills ==============================
 const counterCheck = {
