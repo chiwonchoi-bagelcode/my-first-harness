@@ -15,6 +15,10 @@ dist/
 coverage/
 *.tsbuildinfo
 
+# Bun compiled executable and temporary build artifacts
+/my-first-harness
+/*.bun-build
+
 # Logs
 *.log
 pnpm-debug.log*

@@ -9,7 +9,9 @@ import { registerFilesystemTools } from "./tools/filesystem.ts";
 import { registerShellTools } from "./tools/shell.ts";
 import { loadSkills } from "./skill-loader.ts";
 import { loadSession, saveSession } from "./session-store.ts";
+import { createHarnessPaths } from "./harness-paths.ts";
 
+const paths = createHarnessPaths();
 const token = process.env.AIPROXY_TOKEN;
 
 // ================== utils =========================
@@ -70,13 +72,13 @@ registerTimeTools(toolManager);
 registerOtherLLMTools(toolManager, token);
 registerFilesystemTools(toolManager);
 registerShellTools(toolManager);
-await loadSkills(skillManager);
+await loadSkills(skillManager, paths);
 
 // ===================== AssemblingContext ===================
 function assembleContext(session: any) {
   const runtimeContext = {
     role: "system",
-    content: `현재 작업 디렉토리: ${process.cwd()}`,
+    content: `현재 작업 디렉토리: ${paths.workspaceDirectory}`,
   };
 
   return {
@@ -186,6 +188,7 @@ think deep, step by step.
 
   return {
     id: randomUUID(),
+    workspaceDirectory: paths.workspaceDirectory,
     messages,
   };
 }
@@ -212,7 +215,7 @@ while (true) {
   if (input.startsWith("/resume ")) {
     const id = input.slice("/resume ".length).trim();
 
-    session = await loadSession(id);
+    session = await loadSession(id, paths);
 
     console.log(`resumed session: ${session.id}`);
     continue;
@@ -220,7 +223,7 @@ while (true) {
 
   let output = await turn(session, input);
 
-  await saveSession(session);
+  await saveSession(session, paths);
 
   // console.log(result.content)
   // console.log(response)
