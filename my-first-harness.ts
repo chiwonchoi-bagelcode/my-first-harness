@@ -11,6 +11,13 @@ import { registerShellTools } from "./tools/shell.ts";
 import { loadSkills } from "./skill-loader.ts";
 import { loadSession, saveSession } from "./session-store.ts";
 import { createHarnessPaths } from "./harness-paths.ts";
+import { callLLM, summarize } from "./llm.ts";
+import {
+  compactSession,
+  contextSize,
+  recordMessage,
+  shouldCompact,
+} from "./context-manager.ts";
 
 const paths = createHarnessPaths();
 const token = process.env.AIPROXY_TOKEN;
@@ -111,32 +118,33 @@ function assembleContext(session: any) {
 }
 
 // ======================= step ==============================
+async function compactAndSave(session: any) {
+  // 요약 API가 실패하더라도 지금까지의 원문을 resume할 수 있게 먼저 저장한다.
+  await saveSession(session, paths);
+  const before = contextSize(session);
+  console.log("[context] 대화를 요약합니다...");
+  const compacted = await compactSession(session, (conversation) =>
+    summarize(token, conversation),
+  );
+  if (compacted) {
+    await saveSession(session, paths);
+    console.log(`[context] 압축 완료: ${before} → ${contextSize(session)}자`);
+  } else {
+    console.log("[context] 요약할 대화가 없습니다.");
+  }
+}
+
 async function step(session: any) {
   // console.log(session.messages);
 
+  // turn()이 이전 step의 모든 툴 결과를 기록한 뒤 여기로 돌아온다.
+  if (shouldCompact(session)) await compactAndSave(session);
   const context = assembleContext(session);
-
-  const response = await fetch(
-    "https://aiproxy-api.backoffice.bagelgames.com/openai/v1/chat/completions",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o",
-        messages: context.messages,
-        tools: context.tools,
-      }),
-    },
-  );
-
-  const result = await response.json();
+  const result = await callLLM(token, context);
 
   const message = result.choices[0].message;
 
-  session.messages.push({
+  recordMessage(session, {
     role: "assistant",
     content: message.content,
     tool_calls: message.tool_calls,
@@ -150,7 +158,7 @@ async function step(session: any) {
 
 // ================================ turn =================================
 async function turn(session: any, input: string) {
-  session.messages.push({
+  recordMessage(session, {
     role: "user",
     content: input,
   });
@@ -175,7 +183,7 @@ async function turn(session: any, input: string) {
         toolCall.function.arguments,
       );
 
-      session.messages.push({
+      recordMessage(session, {
         role: "tool",
         tool_call_id: toolCall.id,
         content: String(toolResult),
@@ -207,6 +215,7 @@ think deep, step by step.
   return {
     id: randomUUID(),
     workspaceDirectory: paths.workspaceDirectory,
+    history: [...messages],
     messages,
   };
 }
@@ -236,6 +245,11 @@ while (true) {
     session = await loadSession(id, paths);
 
     console.log(`resumed session: ${session.id}`);
+    continue;
+  }
+
+  if (input.trim() === "/compact") {
+    await compactAndSave(session);
     continue;
   }
 
