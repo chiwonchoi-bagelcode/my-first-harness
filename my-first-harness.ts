@@ -8,6 +8,7 @@ import { registerOtherLLMTools } from "./tools/other-llm.ts";
 import { registerFilesystemTools } from "./tools/filesystem.ts";
 import { registerShellTools } from "./tools/shell.ts";
 import { loadSkills } from "./skill-loader.ts";
+import { SkillManager } from "./skill-manager.ts";
 import { loadSession, saveSession } from "./session-store.ts";
 import { createHarnessPaths } from "./harness-paths.ts";
 import { callLLM, summarize } from "./llm.ts";
@@ -76,25 +77,10 @@ class ToolManager {
 const toolManager = new ToolManager();
 
 // ======================= skill manager =====================
-class SkillManager {
-  skills: any[] = [];
-
-  register(skill: any) {
-    this.skills.push(skill);
-  }
-
-  getMessages() {
-    return this.skills.map((skill) => ({
-      role: "system",
-      content: `Skill: ${skill.name}\n${skill.instructions}`,
-    }));
-  }
-}
-
 const skillManager = new SkillManager();
 
 // ===================== features ============================
-registerCounterFeature(toolManager, skillManager);
+registerCounterFeature(toolManager);
 registerTimeTools(toolManager);
 registerOtherLLMTools(toolManager, token);
 registerFilesystemTools(toolManager);
@@ -189,6 +175,7 @@ async function turn(session: any, input: string) {
     // console.dir(output, { depth: null });
 
     for (const toolCall of choice.message.tool_calls) {
+      console.log(`[tool] ${toolCall.function.name} ${toolCall.function.arguments}`);
       const toolResult = await toolManager.execute(
         toolCall.function.name,
         toolCall.function.arguments,

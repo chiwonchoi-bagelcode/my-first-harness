@@ -24,7 +24,8 @@
     "@modelcontextprotocol/server-filesystem": "^2026.8.31",
     "@modelcontextprotocol/server-memory": "^2026.8.31",
     "ajv": "^8.20.0",
-    "dotenv": "^17.4.2"
+    "dotenv": "^17.4.2",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/node": "^26.4.1"
