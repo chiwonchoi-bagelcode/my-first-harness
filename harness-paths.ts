@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
+// 작업 폴더와 사용자 홈을 기준으로 스킬 및 프로젝트별 세션 저장 경로를 만든다.
 export function createHarnessPaths(
   workspace = process.cwd(),
   userHome = homedir(),
@@ -26,4 +27,5 @@ export function createHarnessPaths(
   };
 }
 
+// createHarnessPaths가 반환하는 경로 객체의 타입.
 export type HarnessPaths = ReturnType<typeof createHarnessPaths>;

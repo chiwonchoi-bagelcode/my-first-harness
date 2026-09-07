@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { HarnessPaths } from "./harness-paths.ts";
 
+// 전역·프로젝트 폴더의 SKILL.md를 읽어 등록하며 같은 이름은 프로젝트 스킬을 우선한다.
 export async function loadSkills(skillManager: any, paths: HarnessPaths) {
   const skills = new Map<string, string>();
 
