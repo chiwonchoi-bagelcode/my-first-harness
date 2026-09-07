@@ -19,6 +19,7 @@
   "packageManager": "pnpm@11.25.0",
   "type": "module",
   "dependencies": {
+    "ajv": "^8.20.0",
     "dotenv": "^17.4.2"
   },
   "devDependencies": {

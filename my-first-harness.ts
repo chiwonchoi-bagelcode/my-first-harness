@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { Ajv } from "ajv";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 
@@ -23,6 +24,7 @@ const terminal = createInterface({
 // ================ tool manager ==================
 class ToolManager {
   tools: any[] = [];
+  ajv = new Ajv();
 
   register(tool: any) {
     this.tools.push(tool);
@@ -39,8 +41,24 @@ class ToolManager {
     }));
   }
 
-  async execute(name: string, arguments_: any) {
+  async execute(name: string, argumentsJson: string) {
     const tool = this.tools.find((tool) => tool.name === name);
+
+    if (!tool) {
+      return `툴 요청 오류: 등록되지 않은 툴입니다: ${name}`;
+    }
+
+    let arguments_: any;
+    try {
+      arguments_ = JSON.parse(argumentsJson);
+    } catch {
+      return "툴 인자 오류: arguments는 올바른 JSON 문자열이어야 합니다.";
+    }
+
+    const valid = this.ajv.validate(tool.parameters, arguments_);
+    if (!valid) {
+      return `툴 인자 오류: ${this.ajv.errorsText()}`;
+    }
 
     return await tool.execute(arguments_);
   }
@@ -154,7 +172,7 @@ async function turn(session: any, input: string) {
     for (const toolCall of choice.message.tool_calls) {
       const toolResult = await toolManager.execute(
         toolCall.function.name,
-        JSON.parse(toolCall.function.arguments),
+        toolCall.function.arguments,
       );
 
       session.messages.push({
