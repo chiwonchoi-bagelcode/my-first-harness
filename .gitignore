@@ -9,6 +9,7 @@ node_modules/
 
 # Session data
 .my-first-harness/sessions/
+.my-first-harness/mcp-files/
 
 # Build and test output
 dist/

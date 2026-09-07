@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --test tests/*.test.ts"
+    "test": "node --test tests/*.test.ts",
+    "test:mcp": "node tests/mcp-smoke.ts"
   },
   "keywords": [],
   "author": "",
@@ -19,6 +20,9 @@
   "packageManager": "pnpm@11.25.0",
   "type": "module",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/server-filesystem": "^2026.8.31",
+    "@modelcontextprotocol/server-memory": "^2026.8.31",
     "ajv": "^8.20.0",
     "dotenv": "^17.4.2"
   },

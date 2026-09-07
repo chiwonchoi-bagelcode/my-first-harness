@@ -1,5 +1,4 @@
 import "dotenv/config";
-import { Ajv } from "ajv";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 
@@ -12,6 +11,9 @@ import { loadSkills } from "./skill-loader.ts";
 import { loadSession, saveSession } from "./session-store.ts";
 import { createHarnessPaths } from "./harness-paths.ts";
 import { callLLM, summarize } from "./llm.ts";
+import { connectMcpServers, closeMcpServers } from "./mcp-client.ts";
+import { createMcpServerConfigs } from "./mcp-servers.ts";
+import { validateToolArguments } from "./tool-schema.ts";
 import {
   compactSession,
   contextSize,
@@ -23,16 +25,9 @@ import {
 const paths = createHarnessPaths();
 const token = process.env.AIPROXY_TOKEN;
 
-// ================== utils =========================
-const terminal = createInterface({
-  input: process.stdin,
-  output: process.stdout,
-});
-
 // ================ tool manager ==================
 class ToolManager {
   tools: any[] = [];
-  ajv = new Ajv();
 
   register(tool: any) {
     this.tools.push(tool);
@@ -63,10 +58,8 @@ class ToolManager {
       return "툴 인자 오류: arguments는 올바른 JSON 문자열이어야 합니다.";
     }
 
-    const valid = this.ajv.validate(tool.parameters, arguments_);
-    if (!valid) {
-      return `툴 인자 오류: ${this.ajv.errorsText()}`;
-    }
+    const validationError = validateToolArguments(tool.parameters, arguments_);
+    if (validationError) return validationError;
 
     try {
       return await tool.execute(arguments_);
@@ -107,6 +100,7 @@ registerOtherLLMTools(toolManager, token);
 registerFilesystemTools(toolManager);
 registerShellTools(toolManager);
 await loadSkills(skillManager, paths);
+const mcpClients = await connectMcpServers(toolManager, await createMcpServerConfigs(paths));
 
 // ===================== AssemblingContext ===================
 function assembleContext(session: any) {
@@ -240,42 +234,51 @@ think deep, step by step.
 let session = createSession();
 
 // ========================= harness runtime =============================
+const terminal = createInterface({ input: process.stdin, output: process.stdout });
+terminal.on("SIGINT", () => {
+  terminal.close();
+  void closeMcpServers(mcpClients).finally(() => process.exit(130));
+});
 console.log(`session: ${session.id}`);
 
-while (true) {
-  const input = await terminal.question("> ");
+try {
+  while (true) {
+    const input = await terminal.question("> ");
 
-  if (input.trim() === "/quit") {
-    terminal.close();
-    break;
+    if (input.trim() === "/quit") {
+      break;
+    }
+
+    if (input.trim() === "/new") {
+      session = createSession();
+      console.log(`new session: ${session.id}`);
+      continue;
+    }
+
+    if (input.startsWith("/resume ")) {
+      const id = input.slice("/resume ".length).trim();
+
+      session = await loadSession(id, paths);
+
+      console.log(`resumed session: ${session.id}`);
+      continue;
+    }
+
+    if (input.trim() === "/compact") {
+      await compactAndSave(session);
+      continue;
+    }
+
+    let output = await turn(session, input);
+
+    await saveSession(session, paths);
+
+    // console.log(result.content)
+    // console.log(response)
+
+    console.log(output);
   }
-
-  if (input.trim() === "/new") {
-    session = createSession();
-    console.log(`new session: ${session.id}`);
-    continue;
-  }
-
-  if (input.startsWith("/resume ")) {
-    const id = input.slice("/resume ".length).trim();
-
-    session = await loadSession(id, paths);
-
-    console.log(`resumed session: ${session.id}`);
-    continue;
-  }
-
-  if (input.trim() === "/compact") {
-    await compactAndSave(session);
-    continue;
-  }
-
-  let output = await turn(session, input);
-
-  await saveSession(session, paths);
-
-  // console.log(result.content)
-  // console.log(response)
-
-  console.log(output);
+} finally {
+  terminal.close();
+  await closeMcpServers(mcpClients);
 }
