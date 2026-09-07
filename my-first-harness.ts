@@ -67,7 +67,15 @@ class ToolManager {
       return `툴 인자 오류: ${this.ajv.errorsText()}`;
     }
 
-    return await tool.execute(arguments_);
+    try {
+      return await tool.execute(arguments_);
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : String(error);
+
+      return `툴 실행 오류: ${message}`;
+    }
   }
 }
 
