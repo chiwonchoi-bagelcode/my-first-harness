@@ -10,16 +10,20 @@ import { createHarnessPaths } from "../harness-paths.ts";
 import { registerFilesystemTools } from "../tools/filesystem.ts";
 import { recordMessage } from "../context-manager.ts";
 import { loadSession, saveSession } from "../session-store.ts";
+import type { Session } from "../session-store.ts";
 
+// 메타데이터와 본문을 가진 테스트용 스킬 파일 내용을 만든다.
 const skillFile = (name: string, body = "BODY_SHOULD_NOT_BE_IN_CATALOG", description = "테스트 작업에 사용한다.") =>
   `---\nname: ${name}\ndescription: ${description}\n---\n${body}\n`;
 
+// 사용자 데이터와 분리된 임시 프로젝트·전역 경로를 만들고 테스트 후 정리한다.
 async function fixture(t: any) {
   const root = await mkdtemp(join(tmpdir(), "harness-skills-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   return createHarnessPaths(join(root, "project"), join(root, "home"));
 }
 
+// 지정한 스킬 폴더에 테스트용 SKILL.md를 저장한다.
 async function put(directory: string, name: string, source = skillFile(name)) {
   const location = join(directory, name, "SKILL.md");
   await mkdir(dirname(location), { recursive: true });
@@ -59,7 +63,7 @@ test("실행 방식 확장은 거부하고 모델 호출 비활성화는 목록�
 test("없는 스킬 폴더/빈 목록에는 스킬 안내 메시지를 넣지 않는다", async (t) => {
   const manager = new SkillManager();
   await loadSkills(manager, await fixture(t));
-  assert.deepEqual(manager.getMessages(), []);
+  assert.deepEqual(manager.getInstructions(), []);
 });
 
 test("전역 + 프로젝트를 발견하고 같은 이름은 프로젝트가 우선한다", async (t) => {
@@ -74,7 +78,7 @@ test("전역 + 프로젝트를 발견하고 같은 이름은 프로젝트가 우
   assert.equal(manager.skills.length, 2);
   assert.equal(manager.skills.find((skill) => skill.name === "shared")?.location, projectFile);
   assert.equal(warning.mock.callCount(), 1);
-  const catalog = JSON.stringify(manager.getMessages());
+  const catalog = JSON.stringify(manager.getInstructions());
   assert.match(catalog, /프로젝트 설명/);
   assert.doesNotMatch(catalog, /GLOBAL_BODY|PROJECT_BODY|BODY_SHOULD_NOT_BE_IN_CATALOG/);
 });
@@ -99,24 +103,25 @@ test("전문과 참조 파일은 기존 readTextFile 결과로만 컨텍스트�
   const tools: any[] = [];
   registerFilesystemTools({ register: (tool: any) => tools.push(tool) });
   const reader = tools.find((tool) => tool.name === "readTextFile");
-  const session = { id: "skill-test", workspaceDirectory: paths.workspaceDirectory, history: [] as any[], messages: [] as any[] };
-  const request = () => JSON.stringify([...manager.getMessages(), ...session.messages]);
+  const session: Session = { id: "skill-test", workspaceDirectory: paths.workspaceDirectory, system: "테스트용 지침", history: [], messages: [] };
+  // 실제 조립처럼 시스템 지침과 대화 기록을 분리한 요청을 검사한다.
+  const request = () => JSON.stringify({ system: [session.system, ...manager.getInstructions()].join("\n\n"), messages: session.messages });
   assert.doesNotMatch(request(), /본문 지침|REFERENCE_ONLY_AFTER_READ/);
 
   // 시작 시 읽은 파일 내용을 캐시해 주는 것이 아니라 툴이 현재 파일을 다시 읽는다.
   await writeFile(location, skillFile("sample", "수정된 본문 지침. references/checklist.md를 확인하라."));
-  recordMessage(session, { role: "assistant", content: null, tool_calls: [{
-    id: "load-skill", type: "function", function: { name: "readTextFile", arguments: JSON.stringify({ path: location }) },
+  recordMessage(session, { role: "assistant", content: [{
+    id: "load-skill", type: "tool-call", name: "readTextFile", arguments: JSON.stringify({ path: location }),
   }] });
   const skillResult = await reader.execute({ path: location });
-  recordMessage(session, { role: "tool", tool_call_id: "load-skill", content: skillResult });
+  recordMessage(session, { role: "tool", content: [{ type: "tool-result", toolCallId: "load-skill", content: skillResult }] });
   assert.match(request(), /수정된 본문 지침/);
   assert.doesNotMatch(request(), /REFERENCE_ONLY_AFTER_READ/);
-  recordMessage(session, { role: "assistant", content: null, tool_calls: [{
-    id: "load-reference", type: "function", function: { name: "readTextFile", arguments: JSON.stringify({ path: reference }) },
+  recordMessage(session, { role: "assistant", content: [{
+    id: "load-reference", type: "tool-call", name: "readTextFile", arguments: JSON.stringify({ path: reference }),
   }] });
   const referenceResult = await reader.execute({ path: reference });
-  recordMessage(session, { role: "tool", tool_call_id: "load-reference", content: referenceResult });
+  recordMessage(session, { role: "tool", content: [{ type: "tool-result", toolCallId: "load-reference", content: referenceResult }] });
   assert.match(request(), /REFERENCE_ONLY_AFTER_READ/);
   await saveSession(session, paths);
   const resumed = await loadSession(session.id, paths);
@@ -135,5 +140,5 @@ test("설치한 공개 스킬을 발견하고 보조 파일/라이선스도 그�
   const skill = manager.skills.find((skill) => skill.name === "webapp-testing")!;
   assert.match(await readFile(join(dirname(skill.location), "scripts", "with_server.py"), "utf8"), /argparse/);
   assert.match(await readFile(join(dirname(skill.location), "LICENSE.txt"), "utf8"), /Apache License/);
-  assert.doesNotMatch(JSON.stringify(manager.getMessages()), /from playwright.sync_api import sync_playwright/);
+  assert.doesNotMatch(JSON.stringify(manager.getInstructions()), /from playwright.sync_api import sync_playwright/);
 });

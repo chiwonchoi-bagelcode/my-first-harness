@@ -27,6 +27,7 @@ export function parseSkillMetadata(source: string, location: string): SkillMetad
   return { name: data.name, description: data.description.trim(), location: resolve(location) };
 }
 
+// 전역·프로젝트의 스킬 메타데이터를 등록하며 같은 이름은 프로젝트 설정을 우선한다.
 export async function loadSkills(
   skillManager: { register(skill: SkillMetadata): void },
   paths: HarnessPaths,

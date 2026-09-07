@@ -1,0 +1,86 @@
+// 하네스 내부 형식. API별 필드 이름은 adapters/ 안에서만 사용한다.
+// 사용자 입력이나 모델 답변의 텍스트 한 조각.
+export type TextBlock = { type: "text"; text: string };
+
+// 모델이 요청한 툴의 호출 ID, 이름, JSON 인자.
+export type ToolCallBlock = {
+  type: "tool-call";
+  id: string;
+  name: string;
+  arguments: string;
+};
+
+// 특정 툴 호출에 대응하는 실행 결과와 오류 여부.
+export type ToolResultBlock = {
+  type: "tool-result";
+  toolCallId: string;
+  content: string;
+  isError?: boolean;
+};
+
+// 같은 API로 대화를 이어갈 때 어댑터가 사용할 전용 정보와 출처.
+export type ReplayState = {
+  adapter: string;
+  provider: string;
+  model: string;
+  // 어댑터가 JSON으로 저장 가능한 값만 넣고, 읽을 때 구조를 확인한다.
+  data: unknown;
+};
+
+// 모델의 텍스트·툴 호출과 선택적인 재전송 정보를 담는 메시지.
+export type AssistantMessage = {
+  role: "assistant";
+  content: (TextBlock | ToolCallBlock)[];
+  replayState?: ReplayState;
+};
+
+// 사용자 입력, 모델 응답, 툴 결과를 구분하는 공통 메시지 형식.
+export type Message =
+  | { role: "user"; content: TextBlock[] }
+  | AssistantMessage
+  | { role: "tool"; content: ToolResultBlock[] };
+
+// 실행 함수는 제외하고 모델에게 전달할 툴 설명과 인자 규격.
+export type ToolDefinition = {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+};
+
+// 컨텍스트 조립이 끝난 시스템 지침, 대화, 툴 정의와 출력 한도.
+export type LLMRequest = {
+  system: string;
+  messages: Message[];
+  tools: ToolDefinition[];
+  maxOutputTokens?: number;
+};
+
+// 이번 모델 응답이 끝난 이유를 API와 무관하게 구분한 값.
+export type StopReason = "stop" | "tool-calls" | "max-tokens" | "other";
+
+// 어댑터가 반환하는 공통 assistant 메시지와 종료 이유.
+export type LLMResult = {
+  message: AssistantMessage;
+  stopReason: StopReason;
+};
+
+// 각 API 어댑터가 공통 요청과 결과를 주고받기 위해 지킬 계약.
+export interface LLMAdapter {
+  // 공통 요청을 받아 모델을 한 번 호출하고 공통 결과로 반환한다.
+  generate(request: LLMRequest): Promise<LLMResult>;
+}
+
+// 메시지의 텍스트 블록만 순서대로 이어 붙여 문자열로 반환한다.
+export function textOf(message: Message): string {
+  return message.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("");
+}
+
+// 요약·크기 계산용으로 원본을 유지한 채 assistant의 재전송 정보를 뺀 새 메시지 배열을 만든다.
+export function withoutReplayState(messages: Message[]): Message[] {
+  return messages.map((message) => message.role === "assistant"
+    ? { role: "assistant", content: message.content }
+    : message);
+}
