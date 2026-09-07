@@ -21,6 +21,27 @@ export function shouldCompact(
   return session.messages.length > 1 && contextSize(session) >= threshold;
 }
 
+// DSH tool-result-pruner의 기본 정책: 8,192 code points 초과 시 앞/뒤 보존.
+export function pruneToolResults(session: SessionContext) {
+  let pruned = 0;
+  session.messages = session.messages.map((message: any) => {
+    if (message.role !== "tool" || typeof message.content !== "string") return message;
+
+    const chars = Array.from(message.content);
+    if (chars.length <= 8192) return message;
+
+    const shortened =
+      chars.slice(0, 4096).join("") +
+      "\n\n[... tool result middle pruned ...]\n\n" +
+      chars.slice(-1024).join("");
+
+    pruned++;
+    // history와 공유하는 원본 객체는 수정하지 않는다.
+    return { ...message, content: shortened };
+  });
+  return pruned;
+}
+
 export async function compactSession(session: SessionContext, summarize: Summarizer) {
   const conversation = session.messages.slice(1);
   if (conversation.length === 0) return false;

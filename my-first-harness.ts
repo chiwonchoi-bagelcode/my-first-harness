@@ -15,6 +15,7 @@ import { callLLM, summarize } from "./llm.ts";
 import {
   compactSession,
   contextSize,
+  pruneToolResults,
   recordMessage,
   shouldCompact,
 } from "./context-manager.ts";
@@ -146,7 +147,15 @@ async function step(session: any) {
   // console.log(session.messages);
 
   // turn()이 이전 step의 모든 툴 결과를 기록한 뒤 여기로 돌아온다.
-  if (shouldCompact(session)) await compactAndSave(session);
+  if (shouldCompact(session)) {
+    const before = contextSize(session);
+    const pruned = pruneToolResults(session);
+    if (pruned > 0) {
+      await saveSession(session, paths);
+      console.log(`[context] 툴 결과 ${pruned}개 정리: ${before} → ${contextSize(session)}자`);
+    }
+    if (shouldCompact(session)) await compactAndSave(session);
+  }
   const context = assembleContext(session);
   const result = await callLLM(token, context);
 
