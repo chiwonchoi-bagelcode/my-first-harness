@@ -17,14 +17,14 @@ export function registerCounterFeature(toolManager: any) {
   toolManager.register({
     name: "counterUP",
     description: "counter값을 1 올린다.",
-    parameters: {},
+    parameters: { type: "object", properties: {} },
     execute: counterUP,
   });
 
   toolManager.register({
     name: "getCounterVal",
     description: "counter값을 받아온다.",
-    parameters: {},
+    parameters: { type: "object", properties: {} },
     execute: getCounterVal,
   });
 }

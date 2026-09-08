@@ -15,7 +15,7 @@ import { summarize } from "./llm.ts";
 import { connectMcpServers, closeMcpServers } from "./mcp-client.ts";
 import { createMcpServerConfigs } from "./mcp-servers.ts";
 import { validateToolArguments } from "./tool-schema.ts";
-import { createChatCompletionsAdapter } from "./adapters/chat-completions.ts";
+import { createModelAdapter } from "./model-config.ts";
 import { textOf } from "./llm-types.ts";
 import type { LLMRequest, ToolDefinition } from "./llm-types.ts";
 import type { Session } from "./session-store.ts";
@@ -29,12 +29,8 @@ import {
 
 const paths = createHarnessPaths();
 const token = process.env.AIPROXY_TOKEN;
-const adapter = createChatCompletionsAdapter({
-  provider: "bagel-openai",
-  baseURL: "https://aiproxy-api.backoffice.bagelgames.com/openai/v1",
-  model: "gpt-4o",
-  apiKey: token,
-});
+// 인자를 생략하면 Luna, haiku를 붙이면 Anthropic Messages를 사용한다.
+const adapter = createModelAdapter(process.argv[2] ?? "luna", token);
 
 // ================ tool manager ==================
 // 툴 정의와 실행 함수를 보관하고 호출 인자 검증 및 실행을 담당한다.
