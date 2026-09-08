@@ -28,9 +28,10 @@ import {
 } from "./context-manager.ts";
 
 const paths = createHarnessPaths();
-const token = process.env.AIPROXY_TOKEN;
-// 인자를 생략하면 Luna, haiku를 붙이면 Anthropic Messages를 사용한다.
-const adapter = createModelAdapter(process.argv[2] ?? "luna", token);
+// 기본은 Bakery Farm Luna이며 luna 또는 haiku를 지정하면 AIProxy 연결을 사용한다.
+const modelChoice = process.argv[2] ?? "farm";
+const token = modelChoice === "farm" ? process.env.BCF_API_KEY : process.env.AIPROXY_TOKEN;
+const adapter = createModelAdapter(modelChoice, token);
 
 // ================ tool manager ==================
 // 툴 정의와 실행 함수를 보관하고 호출 인자 검증 및 실행을 담당한다.

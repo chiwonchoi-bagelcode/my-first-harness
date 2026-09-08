@@ -1,4 +1,5 @@
 import { textOf } from "../llm-types.ts";
+import { readResponsesStream } from "./responses-stream.ts";
 import type { AssistantMessage, LLMAdapter, Message, StopReason } from "../llm-types.ts";
 
 // Responses 연결에 사용할 경로 이름, API 주소, 모델과 인증 키.
@@ -9,6 +10,10 @@ type Config = {
   apiKey: string | undefined;
   // 생략하면 모델 기본값을 쓴다. 허용값은 연결 서버와 모델별 문서로 확인한다.
   reasoningEffort?: string;
+  // Farm처럼 SSE만 반환하는 연결에서는 스트리밍으로 요청한다.
+  stream?: boolean;
+  // false인 연결에는 서버가 무시하는 출력 한도 필드를 보내지 않는다.
+  supportsMaxOutputTokens?: boolean;
 };
 
 // 이 어댑터가 지원하는 텍스트·거절·함수 호출·재전송용 reasoning 항목.
@@ -131,6 +136,7 @@ export function createResponsesAdapter(config: Config): LLMAdapter {
         body: JSON.stringify({
           model: config.model,
           store: false,
+          ...(config.stream ? { stream: true } : {}),
           include: ["reasoning.encrypted_content"],
           ...(config.reasoningEffort ? { reasoning: { effort: config.reasoningEffort } } : {}),
           ...(request.system ? { instructions: request.system } : {}),
@@ -140,14 +146,20 @@ export function createResponsesAdapter(config: Config): LLMAdapter {
             // 선택 인자를 강제 필수로 바꾸지 않는다. 기존 ToolManager에서 원래 스키마로 검증한다.
             strict: false,
           })) } : {}),
-          ...(request.maxOutputTokens !== undefined ? { max_output_tokens: request.maxOutputTokens } : {}),
+          ...(config.supportsMaxOutputTokens !== false && request.maxOutputTokens !== undefined
+            ? { max_output_tokens: request.maxOutputTokens } : {}),
         }),
       });
       let result: unknown;
-      try {
-        result = await response.json();
-      } catch {
-        throw new Error(`LLM 요청 실패: HTTP ${response.status} (JSON 응답이 아닙니다.)`);
+      // Farm은 SSE 본문에 text/plain 헤더를 붙이기도 하므로 명시한 stream 설정도 따른다.
+      if (response.ok && (config.stream || response.headers.get("content-type")?.split(";")[0].trim() === "text/event-stream")) {
+        result = await readResponsesStream(response);
+      } else {
+        try {
+          result = await response.json();
+        } catch {
+          throw new Error(`LLM 요청 실패: HTTP ${response.status} (JSON 응답이 아닙니다.)`);
+        }
       }
       if (!response.ok || !isObject(result) || result.error || result.status === "failed") {
         const error = isObject(result) && isObject(result.error) ? result.error.message : undefined;
