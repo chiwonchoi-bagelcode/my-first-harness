@@ -91,7 +91,7 @@ registerCounterFeature(toolManager);
 registerTimeTools(toolManager);
 registerOtherLLMTools(toolManager, adapter);
 registerFilesystemTools(toolManager);
-registerShellTools(toolManager);
+const shellJobs = registerShellTools(toolManager, paths.workspaceDirectory);
 await loadSkills(skillManager, paths);
 const mcpClients = await connectMcpServers(toolManager, await createMcpServerConfigs(paths));
 
@@ -214,10 +214,25 @@ let session = createSession();
 
 // ========================= harness runtime =============================
 const terminal = createInterface({ input: process.stdin, output: process.stdout });
-terminal.on("SIGINT", () => {
+let cleanupPromise: Promise<void> | undefined;
+let interrupted = false;
+// 정상 종료와 중단이 겹쳐도 셸 작업과 MCP 연결을 한 번만 정리하고 실패를 알린다.
+function cleanupRuntime() {
+  cleanupPromise ??= Promise.allSettled([shellJobs.dispose(), closeMcpServers(mcpClients)])
+    .then((results) => {
+      const failures = results.filter((result) => result.status === "rejected");
+      if (failures.length) throw new AggregateError(failures.map((result) => result.reason), "런타임 정리 실패");
+    });
+  return cleanupPromise;
+}
+// 터미널 Ctrl+C와 운영체제 SIGINT 모두 같은 정리를 거쳐 종료한다.
+function handleInterrupt() {
+  interrupted = true;
   terminal.close();
-  void closeMcpServers(mcpClients).finally(() => process.exit(130));
-});
+  void cleanupRuntime().catch(console.error).finally(() => process.exit(130));
+}
+terminal.on("SIGINT", handleInterrupt);
+process.once("SIGINT", handleInterrupt);
 console.log(`session: ${session.id}`);
 
 try {
@@ -257,7 +272,11 @@ try {
 
     console.log(output);
   }
+} catch (error) {
+  // Ctrl+C로 question 또는 실행 중 명령이 취소된 오류는 중단 처리에서 마무리한다.
+  if (!interrupted) throw error;
 } finally {
   terminal.close();
-  await closeMcpServers(mcpClients);
+  await cleanupRuntime();
+  process.removeListener("SIGINT", handleInterrupt);
 }

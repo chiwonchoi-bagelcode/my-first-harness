@@ -18,6 +18,7 @@ async function main() {
   assert.ok(process.env.AIPROXY_TOKEN, ".env의 AIPROXY_TOKEN을 설정하세요.");
   const originalFetch = globalThis.fetch;
   const definitions = builtinToolDefinitions();
+  const builtinCount = definitions.length;
   let temporary: string | undefined;
   let clients: Awaited<ReturnType<typeof connectMcpServers>> = [];
   let requests = 0;
@@ -45,7 +46,7 @@ async function main() {
       assert.equal(configs.length, 4, "실제 하네스와 같은 MCP 서버 4개가 필요합니다.");
       assert.equal(clients.length, configs.length, "모든 MCP 서버가 연결되어야 합니다.");
     }
-    console.log(`Haiku에 실제 툴 정의 ${definitions.length}개 전송 (기본 8개 + MCP ${definitions.length - 8}개)`);
+    console.log(`Haiku에 실제 툴 정의 ${definitions.length}개 전송 (기본 ${builtinCount}개 + MCP ${definitions.length - builtinCount}개)`);
     const adapter = createModelAdapter("haiku", process.env.AIPROXY_TOKEN);
     const request: LLMRequest = { system: "Follow the user's request. Keep answers short.",
       messages: [{ role: "user", content: [{ type: "text", text: "Reply with exactly pong." }] }],

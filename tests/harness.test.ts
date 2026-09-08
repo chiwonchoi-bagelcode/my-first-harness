@@ -13,6 +13,7 @@ import { createAnthropicMessagesAdapter } from "../adapters/anthropic-messages.t
 import * as context from "../context-manager.ts";
 import { createHarnessPaths } from "../harness-paths.ts";
 import { summarize } from "../llm.ts";
+import { registerShellTools } from "../tools/shell.ts";
 import { textOf } from "../llm-types.ts";
 import type { LLMAdapter } from "../llm-types.ts";
 
@@ -48,6 +49,44 @@ function harness(adapter: LLMAdapter) {
   `);
   return { ...build(deps), events, saved };
 }
+
+test("실제 turn이 background 작업 ID를 기록하고 다음 step의 조회 결과로 완료한다", async (t) => {
+  let steps = 0;
+  let jobId: string;
+  const command = `"${process.execPath}" -e "setTimeout(()=>console.log('job-result'),100)"`;
+  const runtime = harness({
+    // 모델 판단만 고정하고 ToolManager와 셸 프로세스·조회·메시지 기록은 실제로 실행한다.
+    async generate(request) {
+      const results = request.messages.filter((m) => m.role === "tool").flatMap((m) => m.content);
+      if (++steps === 1) return { stopReason: "tool-calls", message: { role: "assistant", content: [
+        { type: "tool-call", id: "start", name: "runCommand", arguments: JSON.stringify({ command, background: true }) },
+      ] } };
+      if (steps === 2) {
+        assert.equal(results[0].toolCallId, "start");
+        const result = JSON.parse(results[0].content);
+        assert.equal(result.status, "running");
+        jobId = result.jobId;
+        return { stopReason: "tool-calls", message: { role: "assistant", content: [
+          { type: "tool-call", id: "read", name: "readJob", arguments: JSON.stringify({ jobId, waitMs: 3000 }) },
+        ] } };
+      }
+      assert.equal(steps, 3);
+      assert.equal(results[1].toolCallId, "read");
+      const result = JSON.parse(results[1].content);
+      assert.equal(result.jobId, jobId);
+      assert.equal(result.status, "completed");
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.stdout, "job-result\n");
+      return { stopReason: "stop", message: { role: "assistant", content: [{ type: "text", text: "검증 완료" }] } };
+    },
+  });
+  const jobs = registerShellTools(runtime.toolManager);
+  t.after(() => jobs.dispose());
+  const session = runtime.createSession();
+  assert.equal(await runtime.turn(session, "백그라운드 실행 후 결과 확인"), "검증 완료");
+  assert.equal(steps, 3);
+  assert.deepEqual(session.history, session.messages);
+});
 
 test("실제 step/turn이 공통 형식으로 복수 툴을 실행하고 다음 API 요청에 모든 결과를 넣는다", async (t) => {
   const bodies: any[] = [];
