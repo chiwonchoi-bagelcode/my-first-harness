@@ -9,6 +9,7 @@
     "test:mcp": "node tests/mcp-smoke.ts",
     "test:responses": "node tests/responses-smoke.ts",
     "test:farm": "node tests/farm-smoke.ts",
+    "test:images": "node tests/images-smoke.ts",
     "test:anthropic": "node tests/anthropic-smoke.ts",
     "test:history": "node tests/history-smoke.ts"
   },

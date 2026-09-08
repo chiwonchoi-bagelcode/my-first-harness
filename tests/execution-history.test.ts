@@ -39,6 +39,7 @@ test("JSONL은 호출 시점의 값을 순서대로 추가하고 알려진 인�
   const f = await fixture(t);
   const message: Message = { role: "user", content: [{ type: "text", text: "처음\n다음 줄 test-private-token" }] };
   const first = f.history.append(f.scope, { type: "message", message });
+  assert.ok(message.content[0].type === "text");
   message.content[0].text = "나중에 바뀐 값";
   const writes = Array.from({ length: 20 }, (_, i) => f.history.append(f.scope, { type: "command", input: `/test ${i}` }));
   await Promise.all([first, ...writes]);

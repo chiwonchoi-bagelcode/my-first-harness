@@ -1,4 +1,5 @@
 import { withoutReplayState } from "./llm-types.ts";
+import { imagesOf, summaryContent } from "./image-content.ts";
 import type { Message } from "./llm-types.ts";
 
 // JSON 문자열 길이를 이용한 간단한 기준이다. 정확한 token 수가 아니다.
@@ -15,9 +16,10 @@ export function recordMessage(session: SessionContext, message: Message) {
   session.messages.push(message);
 }
 
-// 재전송 정보를 제외한 대화 JSON의 문자 수를 계산한다.
+// Base64는 제외하고 이미지당 4,000자 가중치를 더한다. 실제 이미지 토큰 수는 아니다.
 export function contextSize(session: SessionContext) {
-  return JSON.stringify(withoutReplayState(session.messages)).length;
+  const content = summaryContent(session.messages);
+  return (content[0].type === "text" ? content[0].text.length : 0) + imagesOf(session.messages).length * 4000;
 }
 
 // 대화가 비어 있지 않고 설정한 문자 수 기준에 도달했는지 확인한다.
@@ -25,23 +27,29 @@ export function shouldCompact(
   session: SessionContext,
   threshold = COMPACTION_THRESHOLD_CHARS,
 ) {
+  // 아직 주 모델이 보지 않은 이미지를 자동 요약으로 먼저 대체하지 않는다.
+  const lastAssistant = session.messages.findLastIndex((message) => message.role === "assistant");
+  if (imagesOf(session.messages.slice(lastAssistant + 1)).length) return false;
   return session.messages.length > 0 && contextSize(session) >= threshold;
 }
 
 // DSH tool-result-pruner의 기본 정책: 8,192 code points 초과 시 앞/뒤 보존.
 export function pruneToolResults(session: SessionContext) {
   let pruned = 0;
+  // 이미지 블록은 건드리지 않고 긴 텍스트만 앞뒤를 남긴다.
+  function pruneText(text: string) {
+    const chars = Array.from(text);
+    if (chars.length <= 8192) return text;
+    pruned++;
+    return chars.slice(0, 4096).join("") + "\n\n[... tool result middle pruned ...]\n\n" + chars.slice(-1024).join("");
+  }
   session.messages = session.messages.map((message) => {
     if (message.role !== "tool") return message;
     const content = message.content.map((block) => {
-      const chars = Array.from(block.content);
-      if (chars.length <= 8192) return block;
-      pruned++;
       return {
         ...block,
-        content: chars.slice(0, 4096).join("")
-          + "\n\n[... tool result middle pruned ...]\n\n"
-          + chars.slice(-1024).join(""),
+        content: typeof block.content === "string" ? pruneText(block.content)
+          : block.content.map((part) => part.type === "text" ? { ...part, text: pruneText(part.text) } : part),
       };
     });
     // 호출자가 보관한 원본 객체와 블록은 수정하지 않는다.

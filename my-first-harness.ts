@@ -20,7 +20,8 @@ import { ExecutionHistory } from "./execution-history.ts";
 import type { HistoryScope } from "./execution-history.ts";
 import { recordLLM } from "./recorded-llm.ts";
 import { textOf } from "./llm-types.ts";
-import type { LLMAdapter, LLMRequest, Message, ToolDefinition } from "./llm-types.ts";
+import type { ImageBlock, LLMAdapter, LLMRequest, Message, ToolContent, ToolDefinition } from "./llm-types.ts";
+import { attachmentPath, checkImageInput, loadImage } from "./image-content.ts";
 import type { Session } from "./session-store.ts";
 import {
   compactSession,
@@ -76,7 +77,9 @@ class ToolManager {
     if (validationError) return { content: validationError, isError: true };
 
     try {
-      return { content: String(await tool.execute(arguments_, context)) };
+      const value = await tool.execute(arguments_, context);
+      const content: ToolContent = Array.isArray(value) ? value : String(value);
+      return { content };
     } catch (error) {
       const message = error instanceof Error
         ? error.message
@@ -96,7 +99,7 @@ const skillManager = new SkillManager();
 registerCounterFeature(toolManager);
 registerTimeTools(toolManager);
 registerOtherLLMTools(toolManager, adapter);
-registerFilesystemTools(toolManager);
+registerFilesystemTools(toolManager, adapter.supportsImages);
 const shellJobs = registerShellTools(toolManager, paths.workspaceDirectory);
 await loadSkills(skillManager, paths);
 const mcpClients = await connectMcpServers(toolManager, await createMcpServerConfigs(paths));
@@ -166,12 +169,12 @@ async function step(session: Session, scope: HistoryScope) {
 
 // ================================ turn =================================
 // 사용자 입력을 기록하고 모델 호출과 툴 실행을 반복해 최종 답변을 반환한다.
-async function turn(session: Session, input: string) {
+async function turn(session: Session, input: string, images: ImageBlock[] = []) {
   const turnScope = { sessionId: session.id, turnId: randomUUID() };
   await history.append(turnScope, { type: "turn-start" });
   await rememberMessage(session, {
     role: "user",
-    content: [{ type: "text", text: input }],
+    content: [{ type: "text", text: input }, ...images],
   }, turnScope);
 
   try {
@@ -184,7 +187,6 @@ async function turn(session: Session, input: string) {
       }
       if (output.stopReason !== "tool-calls") {
         // 잘린 응답의 툴 인자를 실행하거나, 작업 완료로 취급하지 않는다.
-        await saveSession(session, paths);
         throw new Error(`LLM 응답이 정상 완료되지 않았습니다: ${output.stopReason}`);
       }
 
@@ -197,11 +199,20 @@ async function turn(session: Session, input: string) {
         await history.append(scope, { type: "tool-start", toolCallId: toolCall.id,
           name: toolCall.name, arguments: toolCall.arguments });
         const started = performance.now();
-        const toolResult = await toolManager.execute(
+        let toolResult = await toolManager.execute(
           toolCall.name,
           toolCall.arguments,
           { llm: recordLLM(adapter, history, { ...scope, parentToolCallId: toolCall.id }, "other-llm") },
         );
+        if (Array.isArray(toolResult.content)) {
+          try {
+            checkImageInput([...session.messages, { role: "tool", content: [
+              { type: "tool-result", toolCallId: toolCall.id, ...toolResult },
+            ] }], adapter.supportsImages);
+          } catch (error) {
+            toolResult = { content: error instanceof Error ? error.message : String(error), isError: true };
+          }
+        }
         await history.append(scope, { type: "tool-end", toolCallId: toolCall.id,
           durationMs: performance.now() - started, result: toolResult });
 
@@ -212,6 +223,7 @@ async function turn(session: Session, input: string) {
       }
     }
   } catch (error) {
+    await saveSession(session, paths);
     await history.append(turnScope, { type: "turn-end", outcome: "error",
       error: error instanceof Error ? error.message : String(error) });
     throw error;
@@ -242,6 +254,7 @@ Use the writeTextFile tool to create files or completely replace file contents. 
 }
 
 let session = createSession();
+let pendingImages: ImageBlock[] = [];
 
 // ========================= harness runtime =============================
 const terminal = createInterface({ input: process.stdin, output: process.stdout });
@@ -282,8 +295,22 @@ try {
       break;
     }
 
+    if (input.trim() === "/attach" || input.startsWith("/attach ")) {
+      try {
+        if (!adapter.supportsImages) throw new Error("현재 모델 연결은 이미지 입력이 비활성화되어 있습니다.");
+        const image = await loadImage(attachmentPath(input));
+        checkImageInput([...session.messages, { role: "user", content: [...pendingImages, image] }], true);
+        pendingImages.push(image);
+        console.log(`[attach] ${image.path} (${image.width}×${image.height}) — 다음 메시지에 첨부합니다.`);
+      } catch (error) {
+        console.log(`[attach] ${error instanceof Error ? error.message : String(error)}`);
+      }
+      continue;
+    }
+
     if (input.trim() === "/new") {
       session = createSession();
+      pendingImages = [];
       await history.append({ sessionId: session.id }, { type: "session-start",
         workspaceDirectory: session.workspaceDirectory, system: session.system });
       await saveSession(session, paths);
@@ -295,6 +322,7 @@ try {
       const id = input.slice("/resume ".length).trim();
 
       session = await loadSession(id, paths);
+      pendingImages = [];
       await history.append({ sessionId: session.id }, { type: "session-resume", messageCount: session.messages.length });
 
       console.log(`resumed session: ${session.id}`);
@@ -306,7 +334,9 @@ try {
       continue;
     }
 
-    let output = await turn(session, input);
+    const images = pendingImages;
+    pendingImages = [];
+    let output = await turn(session, input, images);
 
     await saveSession(session, paths);
 

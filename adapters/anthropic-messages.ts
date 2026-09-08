@@ -1,7 +1,8 @@
 import { textOf } from "../llm-types.ts";
+import { checkImageInput, withImagePaths } from "../image-content.ts";
 import { requestJSON } from "./http.ts";
 import { usageOf } from "./usage.ts";
-import type { AssistantMessage, LLMAdapter, Message, StopReason } from "../llm-types.ts";
+import type { AssistantMessage, ContentBlock, LLMAdapter, Message, StopReason } from "../llm-types.ts";
 
 // Messages 주소(v1까지), 모델, 인증 방식과 기본 출력 한도를 지정한다.
 type Config = {
@@ -11,6 +12,7 @@ type Config = {
   apiKey: string | undefined;
   auth?: "api-key" | "bearer";
   maxOutputTokens?: number;
+  supportsImages?: boolean;
 };
 
 // 지원하는 assistant 블록. thinking은 표시하지 않고 재전송용으로만 보관한다.
@@ -84,6 +86,12 @@ function parseInput(argumentsJson: string): Record<string, unknown> {
   return input;
 }
 
+// 공통 이미지의 바이트를 Anthropic base64 이미지 source로 변환한다.
+function toContent(block: ContentBlock): object {
+  return block.type === "text" ? { type: "text", text: block.text }
+    : { type: "image", source: { type: "base64", media_type: block.mediaType, data: block.data } };
+}
+
 // 연속된 툴 결과를 한 user 메시지로 모으고 다른 연속 동역할 메시지도 순서대로 합친다.
 function toMessages(messages: Message[], config: Config): WireMessage[] {
   const wire: WireMessage[] = [];
@@ -92,9 +100,10 @@ function toMessages(messages: Message[], config: Config): WireMessage[] {
     let content: object[];
     if (message.role === "tool") {
       content = message.content.map((block) => ({ type: "tool_result", tool_use_id: block.toolCallId,
-        content: block.content, ...(block.isError !== undefined ? { is_error: block.isError } : {}) }));
+        content: typeof block.content === "string" ? block.content : withImagePaths(block.content).map(toContent),
+        ...(block.isError !== undefined ? { is_error: block.isError } : {}) }));
     } else if (message.role === "user") {
-      content = message.content.map((block) => ({ type: "text", text: block.text }));
+      content = withImagePaths(message.content).map(toContent);
     } else {
       content = replayContent(message, config) ?? message.content.map((block) => block.type === "text"
         ? { type: "text", text: block.text }
@@ -126,9 +135,11 @@ function stopReason(reason: unknown, message: AssistantMessage): StopReason {
 // 공통 기록을 매번 직접 전송하는 Anthropic Messages 어댑터를 만든다.
 export function createAnthropicMessagesAdapter(config: Config): LLMAdapter {
   return {
+    supportsImages: config.supportsImages ?? false,
     // 요청·응답 형식과 인증을 변환하며 기존 하네스의 툴 실행 흐름은 유지한다.
     async generate(request, observer) {
       if (!config.apiKey) throw new Error("Anthropic API 인증 키가 없습니다.");
+      checkImageInput(request.messages, config.supportsImages);
       const { response, result } = await requestJSON({
         api: "anthropic-messages", provider: config.provider, model: config.model,
         url: `${config.baseURL.replace(/\/$/, "")}/messages`,

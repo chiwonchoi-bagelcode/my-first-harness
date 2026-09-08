@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, open } from "node:fs/promises";
 import { join } from "node:path";
 import type { HarnessPaths } from "./harness-paths.ts";
-import type { LLMRequest, Message, StopReason, WireRequest, WireResponse } from "./llm-types.ts";
+import type { LLMRequest, Message, StopReason, ToolContent, WireRequest, WireResponse } from "./llm-types.ts";
 
 // 세션·턴·스텝과 중첩 모델 호출을 발생시킨 툴을 연결하는 식별 정보.
 export type HistoryScope = { sessionId: string; turnId?: string; step?: number; parentToolCallId?: string };
@@ -17,7 +17,7 @@ export type HistoryEvent =
   | { type: "model-end"; callId: string; stopReason: StopReason; durationMs: number }
   | { type: "model-error"; callId: string; error: string; durationMs: number }
   | { type: "tool-start"; toolCallId: string; name: string; arguments: string }
-  | { type: "tool-end"; toolCallId: string; durationMs: number; result: { content: string; isError?: boolean } }
+  | { type: "tool-end"; toolCallId: string; durationMs: number; result: { content: ToolContent; isError?: boolean } }
   | { type: "session-start"; workspaceDirectory: string; system: string }
   | { type: "session-resume"; messageCount: number }
   | { type: "turn-start" }

@@ -7,14 +7,14 @@ export function createModelAdapter(name: string, apiKey: string | undefined): LL
   const baseURL = "https://aiproxy-api.backoffice.bagelgames.com";
   if (name === "farm") return createResponsesAdapter({
     provider: "bakery-farm", baseURL: "https://bakery-codex-farm.bagelcode.ai/v1",
-    model: "gpt-5.6-luna", apiKey, stream: true, supportsMaxOutputTokens: false,
+    model: "gpt-5.6-luna", apiKey, stream: true, supportsMaxOutputTokens: false, supportsImages: true,
   });
   if (name === "luna") return createResponsesAdapter({
-    provider: "bagel-openai", baseURL: `${baseURL}/openai/v1`, model: "gpt-5.6-luna", apiKey,
+    provider: "bagel-openai", baseURL: `${baseURL}/openai/v1`, model: "gpt-5.6-luna", apiKey, supportsImages: true,
   });
   if (name === "haiku") return createAnthropicMessagesAdapter({
     provider: "bagel-anthropic", baseURL: `${baseURL}/anthropic/v1`,
-    model: "claude-haiku-4-5-20251001", apiKey, auth: "bearer",
+    model: "claude-haiku-4-5-20251001", apiKey, auth: "bearer", supportsImages: true,
   });
   throw new Error(`지원하지 않는 모델 선택입니다: ${name}. luna, haiku 또는 farm을 사용하세요.`);
 }

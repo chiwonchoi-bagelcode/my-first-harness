@@ -18,7 +18,13 @@ import { recordLLM } from "../recorded-llm.ts";
 import { registerOtherLLMTools } from "../tools/other-llm.ts";
 import type { HistoryEvent, HistoryScope } from "../execution-history.ts";
 import { textOf } from "../llm-types.ts";
-import type { LLMAdapter, LLMRequest } from "../llm-types.ts";
+import { checkImageInput } from "../image-content.ts";
+import { registerFilesystemTools } from "../tools/filesystem.ts";
+import { solidPng } from "./image-fixture.ts";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ImageBlock, LLMAdapter, LLMRequest, ToolContent } from "../llm-types.ts";
 import type { Session } from "../session-store.ts";
 
 // 실제 메인의 정의만 읽어 테스트한다. CLI 시작, dotenv, 사용자 스킬 로딩은 실행하지 않는다.
@@ -47,7 +53,7 @@ function harness(adapter: LLMAdapter) {
     async flush() {},
   };
   const deps = {
-    SkillManager, validateToolArguments, adapter, ...context, summarize, textOf, randomUUID, history, recordLLM,
+    SkillManager, validateToolArguments, adapter, ...context, summarize, textOf, randomUUID, history, recordLLM, checkImageInput,
     paths: createHarnessPaths("/test", "/test-home"),
     console: { log: (text: string) => events.push(text) },
     saveSession: async (session: any) => { saved.push(structuredClone(session)); },
@@ -60,7 +66,7 @@ function harness(adapter: LLMAdapter) {
   const runtime = build(deps) as {
     toolManager: any;
     skillManager: SkillManager;
-    turn(session: Session, input: string): Promise<string>;
+    turn(session: Session, input: string, images?: ImageBlock[]): Promise<string>;
     createSession(): Session;
     assembleContext(session: Session): LLMRequest;
   };
@@ -71,6 +77,41 @@ function harness(adapter: LLMAdapter) {
 function recordedMessages(runtime: ReturnType<typeof harness>) {
   return runtime.records.filter((event) => event.type === "message").map((event) => event.message);
 }
+
+// 문자열을 반환하는 툴의 결과를 좁혀 이미지 배열과 혼동하지 않는다.
+function toolText(content: ToolContent): string {
+  if (typeof content !== "string") throw new Error("expected text tool result");
+  return content;
+}
+
+test("실제 turn은 첨부와 readImage 결과를 같은 루프에서 보내고 툴 이미지 오류는 결과로 돌려준다", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "harness-image-turn-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "screen.png");
+  await writeFile(path, solidPng());
+  const image: ImageBlock = { type: "image", data: solidPng().toString("base64"), mediaType: "image/png", path, width: 128, height: 128 };
+  let steps = 0;
+  const runtime = harness({ supportsImages: true,
+    // 실제 툴과 기록 루프를 실행하고 모델의 요청·응답만 대체한다.
+    async generate(request) {
+      assert.deepEqual(request.messages[0].content, [{ type: "text", text: "화면 확인" }, image]);
+      if (++steps === 1) return { stopReason: "tool-calls", message: { role: "assistant", content: [
+        { type: "tool-call", id: "good", name: "readImage", arguments: JSON.stringify({ path }) },
+        { type: "tool-call", id: "bad", name: "readImage", arguments: JSON.stringify({ path: join(directory, "missing.png") }) },
+      ] } };
+      const results = request.messages.filter((item) => item.role === "tool").flatMap((item) => item.content);
+      assert.deepEqual(results[0], { type: "tool-result", toolCallId: "good", content: [image] });
+      assert.equal(results[1].isError, true);
+      assert.match(toolText(results[1].content), /ENOENT/);
+      return { stopReason: "stop", message: { role: "assistant", content: [{ type: "text", text: "확인 완료" }] } };
+    },
+  });
+  registerFilesystemTools(runtime.toolManager, true);
+  const session = runtime.createSession();
+  assert.equal(await runtime.turn(session, "화면 확인", [image]), "확인 완료");
+  assert.equal(steps, 2);
+  assert.deepEqual(session.messages, recordedMessages(runtime));
+});
 
 test("실제 turn이 background 작업 ID를 기록하고 다음 step의 조회 결과로 완료한다", async (t) => {
   let steps = 0;
@@ -85,7 +126,7 @@ test("실제 turn이 background 작업 ID를 기록하고 다음 step의 조회 
       ] } };
       if (steps === 2) {
         assert.equal(results[0].toolCallId, "start");
-        const result = JSON.parse(results[0].content);
+        const result = JSON.parse(toolText(results[0].content));
         assert.equal(result.status, "running");
         jobId = result.jobId;
         return { stopReason: "tool-calls", message: { role: "assistant", content: [
@@ -94,7 +135,7 @@ test("실제 turn이 background 작업 ID를 기록하고 다음 step의 조회 
       }
       assert.equal(steps, 3);
       assert.equal(results[1].toolCallId, "read");
-      const result = JSON.parse(results[1].content);
+      const result = JSON.parse(toolText(results[1].content));
       assert.equal(result.jobId, jobId);
       assert.equal(result.status, "completed");
       assert.equal(result.exitCode, 0);
@@ -112,8 +153,8 @@ test("실제 turn이 background 작업 ID를 기록하고 다음 step의 조회 
   const ends = runtime.records.filter((event) => event.type === "tool-end");
   assert.deepEqual(starts.map((event) => [event.name, event.step]), [["runCommand", 1], ["readJob", 2]]);
   assert.deepEqual(ends.map((event) => event.toolCallId), ["start", "read"]);
-  assert.equal(JSON.parse(ends[0].result.content).jobId, jobId!);
-  assert.equal(JSON.parse(ends[1].result.content).status, "completed");
+  assert.equal(JSON.parse(toolText(ends[0].result.content)).jobId, jobId!);
+  assert.equal(JSON.parse(toolText(ends[1].result.content)).status, "completed");
 });
 
 test("실제 step/turn이 공통 형식으로 복수 툴을 실행하고 다음 API 요청에 모든 결과를 넣는다", async (t) => {
@@ -213,7 +254,7 @@ test("MCP의 2020-12 인자 검증과 원격 실행 결과가 공통 turn 기록
       const results = request.messages.filter((message) => message.role === "tool").flatMap((message) => message.content);
       assert.deepEqual(results.map((result) => result.toolCallId), ["mcp-0", "mcp-1", "mcp-2"]);
       assert.deepEqual(results.map((result) => !!result.isError), [true, true, false]);
-      assert.match(results[1].content, /원격 실행 실패/);
+      assert.match(toolText(results[1].content), /원격 실행 실패/);
       assert.equal(results[2].content, "ok");
       return { stopReason: "stop", message: { role: "assistant", content: [{ type: "text", text: "완료" }] } };
     },

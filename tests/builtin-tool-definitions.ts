@@ -20,7 +20,7 @@ export function builtinToolDefinitions(): ToolDefinition[] {
     // 정의 수집 중에는 LLM을 호출할 수 없다.
     async generate() { throw new Error("정의 수집 중 LLM 실행 금지"); },
   });
-  registerFilesystemTools(registry);
+  registerFilesystemTools(registry, true);
   registerShellTools(registry);
   return definitions;
 }

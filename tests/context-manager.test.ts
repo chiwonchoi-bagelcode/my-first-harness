@@ -19,6 +19,8 @@ const tool = (content: string, id = "call-1"): Message => ({
 // 툴 메시지인지 확인한 뒤 첫 결과 블록의 문자열을 꺼낸다.
 function toolText(message: Message): string {
   if (message.role !== "tool") throw new Error("expected tool result");
+  assert.equal(typeof message.content[0].content, "string");
+  if (typeof message.content[0].content !== "string") throw new Error("expected text result");
   return message.content[0].content;
 }
 // 컨텍스트 압축을 검증할 긴 사용자 입력이 담긴 테스트 세션을 만든다.

@@ -2,6 +2,22 @@
 // 사용자 입력이나 모델 답변의 텍스트 한 조각.
 export type TextBlock = { type: "text"; text: string };
 
+// PNG 원본을 세션에 보존하고 API 요청에서는 이미지 입력으로 변환한다.
+export type ImageBlock = {
+  type: "image";
+  mediaType: "image/png";
+  data: string;
+  path: string;
+  width: number;
+  height: number;
+};
+
+// 사용자 입력과 툴 결과에 담을 수 있는 텍스트 또는 이미지.
+export type ContentBlock = TextBlock | ImageBlock;
+
+// 일반 툴의 문자열 반환과 이미지 툴의 블록 배열을 모두 보존한다.
+export type ToolContent = string | ContentBlock[];
+
 // 모델이 요청한 툴의 호출 ID, 이름, JSON 인자.
 export type ToolCallBlock = {
   type: "tool-call";
@@ -14,7 +30,7 @@ export type ToolCallBlock = {
 export type ToolResultBlock = {
   type: "tool-result";
   toolCallId: string;
-  content: string;
+  content: ToolContent;
   isError?: boolean;
 };
 
@@ -36,7 +52,7 @@ export type AssistantMessage = {
 
 // 사용자 입력, 모델 응답, 툴 결과를 구분하는 공통 메시지 형식.
 export type Message =
-  | { role: "user"; content: TextBlock[] }
+  | { role: "user"; content: ContentBlock[] }
   | AssistantMessage
   | { role: "tool"; content: ToolResultBlock[] };
 
@@ -101,6 +117,8 @@ export type LLMResult = {
 
 // 각 API 어댑터가 공통 요청과 결과를 주고받기 위해 지킬 계약.
 export interface LLMAdapter {
+  // 선택한 모델·연결에서 이미지 전송을 허용할지 명시한다. 미지정은 비활성화다.
+  supportsImages?: boolean;
   // 공통 요청을 받아 모델을 한 번 호출하고 공통 결과로 반환한다.
   generate(request: LLMRequest, observer?: LLMObserver): Promise<LLMResult>;
 }

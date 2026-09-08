@@ -1,7 +1,8 @@
 import { textOf } from "../llm-types.ts";
+import { checkImageInput, withImagePaths } from "../image-content.ts";
 import { requestJSON } from "./http.ts";
 import { usageOf } from "./usage.ts";
-import type { AssistantMessage, LLMAdapter, Message, StopReason } from "../llm-types.ts";
+import type { AssistantMessage, ContentBlock, LLMAdapter, Message, StopReason, ToolContent } from "../llm-types.ts";
 
 // Responses 연결에 사용할 경로 이름, API 주소, 모델과 인증 키.
 type Config = {
@@ -15,6 +16,7 @@ type Config = {
   stream?: boolean;
   // false인 연결에는 서버가 무시하는 출력 한도 필드를 보내지 않는다.
   supportsMaxOutputTokens?: boolean;
+  supportsImages?: boolean;
 };
 
 // 이 어댑터가 지원하는 텍스트·거절·함수 호출·재전송용 reasoning 항목.
@@ -101,13 +103,24 @@ function replayOutput(message: AssistantMessage, config: Config): OutputItem[] |
   }
 }
 
+// 공통 이미지 블록을 data URL로 바꾸며 일반 텍스트 결과는 문자열로 유지한다.
+function toContent(content: ToolContent): string | object[] {
+  if (typeof content === "string") return content;
+  return withImagePaths(content).map((block: ContentBlock) => block.type === "text"
+    ? { type: "input_text", text: block.text }
+    : { type: "input_image", image_url: `data:${block.mediaType};base64,${block.data}`, detail: "auto" });
+}
+
 // 사용자·툴 결과를 input 항목으로 바꾸고 assistant는 유효한 원본 또는 공통 내용으로 보낸다.
 function toInput(message: Message, config: Config): object[] {
-  if (message.role === "user") return [{ role: "user", content: textOf(message) }];
+  if (message.role === "user") return [{ role: "user", content: message.content.some((block) => block.type === "image")
+    ? toContent(message.content) : textOf(message) }];
   if (message.role === "tool") return message.content.map((block) => ({
     type: "function_call_output",
     call_id: block.toolCallId,
-    output: block.isError ? `툴 오류: ${block.content}` : block.content,
+    output: toContent(block.isError
+      ? typeof block.content === "string" ? `툴 오류: ${block.content}` : [{ type: "text", text: "툴 오류:" }, ...block.content]
+      : block.content),
   }));
   const replay = replayOutput(message, config);
   if (replay) return replay;
@@ -128,9 +141,11 @@ function stopReason(result: Record<string, unknown>, output: OutputItem[], messa
 // 서버 세션에 의존하지 않고 매 요청에 기록을 직접 보내는 Responses 어댑터를 만든다.
 export function createResponsesAdapter(config: Config): LLMAdapter {
   return {
+    supportsImages: config.supportsImages ?? false,
     // 공통 요청을 Responses로 보내고 공통 답변과 다음 요청용 원본 출력 항목을 반환한다.
     async generate(request, observer) {
       if (!config.apiKey) throw new Error("Responses API 인증 키가 없습니다.");
+      checkImageInput(request.messages, config.supportsImages);
       const { response, result } = await requestJSON({
         api: "responses", provider: config.provider, model: config.model,
         url: `${config.baseURL.replace(/\/$/, "")}/responses`,

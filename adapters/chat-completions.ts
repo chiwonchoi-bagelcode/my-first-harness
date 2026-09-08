@@ -1,4 +1,5 @@
 import { textOf } from "../llm-types.ts";
+import { checkImageInput, contentBlocks } from "../image-content.ts";
 import { requestJSON } from "./http.ts";
 import { usageOf } from "./usage.ts";
 import type { AssistantMessage, LLMAdapter, Message, StopReason } from "../llm-types.ts";
@@ -36,7 +37,8 @@ function toChatMessages(message: Message, config: Config): object[] {
     return message.content.map((block) => ({
       role: "tool",
       tool_call_id: block.toolCallId,
-      content: block.isError ? `툴 오류: ${block.content}` : block.content,
+      content: (block.isError ? "툴 오류: " : "") + contentBlocks(block.content)
+        .filter((part) => part.type === "text").map((part) => part.text).join(""),
     }));
   }
 
@@ -113,8 +115,11 @@ function stopReason(reason: string): StopReason {
 // 주어진 연결 설정을 사용하는 Chat Completions 어댑터 객체를 만든다.
 export function createChatCompletionsAdapter(config: Config): LLMAdapter {
   return {
+    supportsImages: false,
     // 공통 요청을 API에 보내고 응답 형식과 종료 이유를 확인해 공통 결과로 반환한다.
     async generate(request, observer) {
+      // 이 레거시 어댑터는 텍스트 전용이다. 이미지가 조용히 사라지지 않도록 거절한다.
+      checkImageInput(request.messages, false);
       const { response, result } = await requestJSON({
         api: "chat-completions", provider: config.provider, model: config.model,
         url: `${config.baseURL.replace(/\/$/, "")}/chat/completions`,

@@ -1,4 +1,5 @@
 import { readFile, readdir, writeFile } from "node:fs/promises";
+import { loadImage } from "../image-content.ts";
 
 // 지정한 폴더의 파일·폴더 이름을 줄바꿈으로 연결해 반환한다.
 async function listDirectory(path: string) {
@@ -15,7 +16,14 @@ async function writeTextFile(path: string, content: string) {
 }
 
 // 파일 읽기·쓰기와 폴더 목록 조회 툴을 ToolManager에 등록한다.
-export function registerFilesystemTools(toolManager: any) {
+export function registerFilesystemTools(toolManager: any, supportsImages = false) {
+  if (supportsImages) toolManager.register({
+    name: "readImage",
+    description: "PNG 이미지를 직접 보고 판단할 수 있도록 읽는다. 스크린샷도 가능하다. 4 MiB 이하, 가로·세로 각각 4096px 이하만 지원한다.",
+    parameters: { type: "object", properties: { path: { type: "string", description: "읽을 PNG 이미지 경로" } }, required: ["path"] },
+    // 이미지 자체를 반환한다. 별도의 LLM 분석 요청은 하지 않는다.
+    execute: async ({ path }: { path: string }) => [await loadImage(path)],
+  });
   toolManager.register({
     name: "readTextFile",
     description: "텍스트 파일의 내용을 읽는다.",

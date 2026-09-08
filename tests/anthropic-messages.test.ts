@@ -18,7 +18,8 @@ const thinking = { type: "thinking", thinking: "test reasoning", signature: "tes
 
 test("실제 기본 툴 전체에 객체 스키마가 있으며 인자 없는 툴도 Anthropic 필수 type을 보낸다", async (t) => {
   const definitions = builtinToolDefinitions();
-  assert.equal(definitions.length, 11);
+  assert.equal(definitions.length, 12);
+  assert.ok(definitions.some((tool) => tool.name === "readImage"));
   t.mock.method(globalThis, "fetch", async (_url: any, init: any) => {
     const body = JSON.parse(init.body);
     for (const tool of body.tools) {
