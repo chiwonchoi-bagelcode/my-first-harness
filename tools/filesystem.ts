@@ -15,7 +15,27 @@ async function writeTextFile(path: string, content: string) {
   return `wrote ${path}`;
 }
 
-// 파일 읽기·쓰기와 폴더 목록 조회 툴을 ToolManager에 등록한다.
+// 기존 문자열이 정확히 한 곳에 있을 때만 새 문자열로 교체한다.
+async function editTextFile(path: string, oldText: string, newText: string) {
+  if (oldText === "") {
+    throw new Error("oldText는 비어 있을 수 없습니다.");
+  }
+
+  const content = await readFile(path, "utf8");
+  const start = content.indexOf(oldText);
+  if (start === -1) {
+    throw new Error("일치하는 내용이 없습니다. 파일을 다시 읽어 확인하세요.");
+  }
+  if (content.indexOf(oldText, start + 1) !== -1) {
+    throw new Error("여러 곳에 일치합니다. oldText에 주변 코드를 더 포함하세요.");
+  }
+
+  const updated = content.slice(0, start) + newText + content.slice(start + oldText.length);
+  await writeFile(path, updated, "utf8");
+  return `edited ${path}`;
+}
+
+// 파일 읽기·쓰기·부분 수정·폴더 조회와 지원 모델용 이미지 읽기를 등록한다.
 export function registerFilesystemTools(toolManager: any, supportsImages = false) {
   if (supportsImages) toolManager.register({
     name: "readImage",
@@ -24,6 +44,24 @@ export function registerFilesystemTools(toolManager: any, supportsImages = false
     // 이미지 자체를 반환한다. 별도의 LLM 분석 요청은 하지 않는다.
     execute: async ({ path }: { path: string }) => [await loadImage(path)],
   });
+  toolManager.register({
+    name: "editTextFile",
+    description:
+      "기존 파일 일부를 교체한다. 먼저 파일을 읽고 oldText를 공백·줄바꿈까지 정확히 한 곳에 일치시킨다. 여러 줄 교체와 빈 newText로 부분 삭제가 가능하다.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "수정할 기존 파일 경로" },
+        oldText: { type: "string", minLength: 1, description: "교체할 원문. 중복이면 주변 코드를 더 포함한다." },
+        newText: { type: "string", description: "교체할 새 내용. 빈 문자열이면 해당 부분을 삭제한다." },
+      },
+      required: ["path", "oldText", "newText"],
+      additionalProperties: false,
+    },
+    // 모델이 전달한 수정 인자로 파일 교체 함수를 호출한다.
+    execute: (args: any) => editTextFile(args.path, args.oldText, args.newText),
+  });
+
   toolManager.register({
     name: "readTextFile",
     description: "텍스트 파일의 내용을 읽는다.",
