@@ -12,6 +12,7 @@ import { compactSession, pruneToolResults, recordMessage } from "../context-mana
 import { recordLLM } from "../recorded-llm.ts";
 import { createChatCompletionsAdapter } from "../adapters/chat-completions.ts";
 import { createResponsesAdapter } from "../adapters/responses.ts";
+import { createModelAdapter } from "../model-config.ts";
 import { createAnthropicMessagesAdapter } from "../adapters/anthropic-messages.ts";
 import { usageOf } from "../adapters/usage.ts";
 import type { LLMRequest, Message } from "../llm-types.ts";
@@ -139,6 +140,51 @@ for (const api of ["chat-completions", "responses", "anthropic-messages"] as con
     assert.doesNotMatch(await readFile(f.logPath, "utf8"), /test-private-token|Authorization|x-api-key|do-not-log/);
   });
 }
+
+test("Farm SSE의 원본 이벤트·완료 항목·사용량도 같은 호출 ID의 JSONL에 남는다", async (t) => {
+  const f = await fixture(t);
+  const item = { type: "message", role: "assistant", content: [{ type: "output_text", text: "완료" }] };
+  const frames = [
+    { type: "response.output_item.done", output_index: 0, item },
+    { type: "response.completed", response: { status: "completed", output: [],
+      usage: { input_tokens: 100, output_tokens: 20, input_tokens_details: { cached_tokens: 70 } } } },
+  ];
+  t.mock.method(globalThis, "fetch", async (_url: any, init: any) => {
+    assert.equal(JSON.parse(init.body).stream, true);
+    return new Response(frames.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), {
+      headers: { "content-type": "text/plain", "x-request-id": "farm-request" },
+    });
+  });
+  const result = await recordLLM(createModelAdapter("farm", "test-private-token"), f.history, f.scope, "step").generate(request());
+  assert.deepEqual(result.message.content, [{ type: "text", text: "완료" }]);
+  const events = await f.events();
+  assert.deepEqual(events.map((event) => event.type), ["model-start", "model-request", "model-response", "model-end"]);
+  assert.equal(new Set(events.map((event) => event.callId)).size, 1);
+  assert.deepEqual(events[2].response.body, { events: frames });
+  assert.deepEqual(events[2].response.usage, { inputTokens: 100, outputTokens: 20, cachedInputTokens: 70 });
+  assert.deepEqual(events[2].response.usage, result.usage);
+  assert.equal(events[2].response.requestId, "farm-request");
+  assert.doesNotMatch(await readFile(f.logPath, "utf8"), /test-private-token|Authorization/);
+});
+
+test("Farm SSE 실패·중간 단절도 수신 이벤트를 보존하고 model-error로 끝난다", async (t) => {
+  const cases = [
+    { frame: { type: "response.failed", response: { status: "failed", error: { message: "generation failed" },
+      usage: { input_tokens: 10, output_tokens: 2 } } }, pattern: /generation failed/, usage: { inputTokens: 10, outputTokens: 2 } },
+    { frame: { type: "error", message: "overloaded" }, pattern: /overloaded/, usage: undefined },
+    { frame: { type: "response.created", response: { status: "in_progress" } }, pattern: /완료 이벤트 없이/, usage: undefined },
+  ];
+  for (const entry of cases) {
+    const f = await fixture(t);
+    const mock = t.mock.method(globalThis, "fetch", async () => new Response(`data: ${JSON.stringify(entry.frame)}\n\n`));
+    await assert.rejects(recordLLM(createModelAdapter("farm", "test-private-token"), f.history, f.scope, "step").generate(request()), entry.pattern);
+    const events = await f.events();
+    assert.deepEqual(events.map((event) => event.type), ["model-start", "model-request", "model-response", "model-error"]);
+    assert.deepEqual(events[2].response.body, { events: [entry.frame] });
+    assert.deepEqual(events[2].response.usage, entry.usage);
+    mock.mock.restore();
+  }
+});
 
 test("사용량 누락은 0이 아니며 캐시와 reasoning을 이중 합산하지 않는다", () => {
   assert.deepEqual(usageOf("responses", {}), {});
