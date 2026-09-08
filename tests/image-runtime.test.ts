@@ -1,16 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
-import { stripTypeScriptTypes } from "node:module";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { solidPng } from "./image-fixture.ts";
-
-// 실제 CLI 명령 루프만 실행해 사용자 설정·API·MCP를 건드리지 않는다.
-const source = await readFile(new URL("../my-first-harness.ts", import.meta.url), "utf8");
-const runtimeSource = stripTypeScriptTypes(source.slice(source.indexOf("let session = createSession();")));
 
 // 읽기 프롬프트가 돌아올 때까지 기다리되 실패한 자식 때문에 무한 대기하지 않는다.
 async function until(check: () => boolean) {
@@ -25,24 +20,24 @@ test("CLI attach는 여러 장·공백 경로·실패 복구·한 번 소비·ne
   const directory = await mkdtemp(join(tmpdir(), "harness-image-cli-"));
   const file = join(directory, "space name.png");
   await writeFile(file, solidPng());
-  const root = new URL("..", import.meta.url);
   const script = `
-    import { createInterface } from 'node:readline/promises';
-    import { attachmentPath, checkImageInput, loadImage } from ${JSON.stringify(new URL("image-content.ts", root).href)};
-    const adapter = { supportsImages: true };
+    import { runCli } from ${JSON.stringify(new URL("../cli.ts", import.meta.url).href)};
+    import { createSession } from ${JSON.stringify(new URL("../session.ts", import.meta.url).href)};
     const history = { append: async () => {}, flush: async () => {} };
-    const paths = {};
+    const paths = { workspaceDirectory: '/test' };
     const shellJobs = { dispose: async () => {} };
     const mcpClients = [];
     const closeMcpServers = async () => {};
     const saveSession = async () => {};
     const compactAndSave = async () => {};
-    const loadSession = async () => createSession();
-    // CLI에 필요한 빈 세션만 만든다.
-    function createSession() { return { id: 'test-session', messages: [] }; }
+    const loadSession = async () => createSession(paths.workspaceDirectory);
     // 모델 호출 대신 turn에 전달된 이미지 수를 출력한다.
     async function turn(session, input, images) { return 'COUNT:' + images.length; }
-    ${runtimeSource}
+    await runCli({
+      agent: { turn, compact: compactAndSave }, paths, history,
+      supportsImages: true, saveSession, loadSession,
+      dispose: async () => { await shellJobs.dispose(); await closeMcpServers(mcpClients); },
+    });
   `;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["pipe", "pipe", "pipe"] });
   const closed = once(child, "close");

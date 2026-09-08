@@ -1,16 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { HarnessPaths } from "./harness-paths.ts";
-import type { Message } from "./llm-types.ts";
+import type { Session } from "./session.ts";
 import { checkSessionId } from "./execution-history.ts";
-
-// resume에 필요한 현재 상태만 담는다. 원문·실행 이력은 별도 JSONL에 저장한다.
-export type Session = {
-  id: string;
-  workspaceDirectory: string;
-  system: string;
-  messages: Message[];
-};
 
 // 현재 세션 상태를 JSON 스냅샷에 저장하며 실행 기록 JSONL은 건드리지 않는다.
 export async function saveSession(session: Session, paths: HarnessPaths) {

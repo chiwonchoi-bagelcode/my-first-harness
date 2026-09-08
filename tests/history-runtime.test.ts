@@ -2,15 +2,10 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createHarnessPaths } from "../harness-paths.ts";
-
-// 실제 메인의 명령 루프를 사용하되 API와 MCP·셸은 실행하지 않는다.
-const source = await readFile(new URL("../my-first-harness.ts", import.meta.url), "utf8");
-const runtimeSource = stripTypeScriptTypes(source.slice(source.indexOf("let session = createSession();")));
 
 // 자식 프로세스가 명령을 받을 준비가 될 때까지 짧게 기다린다.
 async function until(check: () => boolean) {
@@ -25,8 +20,7 @@ test("실제 CLI의 new/resume/quit는 세션별 JSONL에 추가하고 JSON 스�
   const directory = await mkdtemp(join(tmpdir(), "harness-history-runtime-"));
   const root = new URL("..", import.meta.url);
   const script = `
-    import { createInterface } from 'node:readline/promises';
-    import { randomUUID } from 'node:crypto';
+    import { runCli } from ${JSON.stringify(new URL("../cli.ts", import.meta.url).href)};
     import { ExecutionHistory } from ${JSON.stringify(new URL("execution-history.ts", root).href)};
     import { createHarnessPaths } from ${JSON.stringify(new URL("harness-paths.ts", root).href)};
     import { loadSession, saveSession } from ${JSON.stringify(new URL("session-store.ts", root).href)};
@@ -37,9 +31,11 @@ test("실제 CLI의 new/resume/quit는 세션별 JSONL에 추가하고 JSON 스�
     const closeMcpServers = async () => {};
     const compactAndSave = async () => {};
     const turn = async () => { throw new Error('API 호출 금지'); };
-    // 실제 스냅샷 저장·로드에 필요한 최소 상태를 만든다.
-    function createSession() { return { id: randomUUID(), workspaceDirectory: paths.workspaceDirectory, system: '지침', messages: [] }; }
-    ${runtimeSource}
+    await runCli({
+      agent: { turn, compact: compactAndSave }, paths, history,
+      supportsImages: false, saveSession, loadSession,
+      dispose: async () => { await shellJobs.dispose(); await closeMcpServers(mcpClients); },
+    });
   `;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["pipe", "pipe", "pipe"] });
   let output = "";

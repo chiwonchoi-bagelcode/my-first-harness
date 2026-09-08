@@ -6,7 +6,7 @@ import test from "node:test";
 import { compactSession, contextSize, pruneToolResults, recordMessage, shouldCompact } from "../context-manager.ts";
 import { createHarnessPaths } from "../harness-paths.ts";
 import { loadSession, saveSession } from "../session-store.ts";
-import type { Session } from "../session-store.ts";
+import type { Session } from "../session.ts";
 import type { Message } from "../llm-types.ts";
 import { textOf } from "../llm-types.ts";
 

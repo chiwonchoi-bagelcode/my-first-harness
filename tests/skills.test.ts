@@ -10,7 +10,7 @@ import { createHarnessPaths } from "../harness-paths.ts";
 import { registerFilesystemTools } from "../tools/filesystem.ts";
 import { recordMessage } from "../context-manager.ts";
 import { loadSession, saveSession } from "../session-store.ts";
-import type { Session } from "../session-store.ts";
+import type { Session } from "../session.ts";
 
 // 메타데이터와 본문을 가진 테스트용 스킬 파일 내용을 만든다.
 const skillFile = (name: string, body = "BODY_SHOULD_NOT_BE_IN_CATALOG", description = "테스트 작업에 사용한다.") =>

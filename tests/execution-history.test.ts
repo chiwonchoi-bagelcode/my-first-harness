@@ -7,7 +7,7 @@ import type { TestContext } from "node:test";
 import { ExecutionHistory } from "../execution-history.ts";
 import { createHarnessPaths } from "../harness-paths.ts";
 import { saveSession, loadSession } from "../session-store.ts";
-import type { Session } from "../session-store.ts";
+import type { Session } from "../session.ts";
 import { compactSession, pruneToolResults, recordMessage } from "../context-manager.ts";
 import { recordLLM } from "../recorded-llm.ts";
 import { createChatCompletionsAdapter } from "../adapters/chat-completions.ts";

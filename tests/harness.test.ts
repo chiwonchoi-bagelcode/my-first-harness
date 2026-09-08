@@ -2,74 +2,53 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stripTypeScriptTypes } from "node:module";
-import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { SkillManager } from "../skill-manager.ts";
-import { validateToolArguments } from "../tool-schema.ts";
 import { discoverMcpTools } from "../mcp-client.ts";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { createChatCompletionsAdapter } from "../adapters/chat-completions.ts";
 import { createResponsesAdapter } from "../adapters/responses.ts";
 import { createAnthropicMessagesAdapter } from "../adapters/anthropic-messages.ts";
-import * as context from "../context-manager.ts";
 import { createHarnessPaths } from "../harness-paths.ts";
-import { summarize } from "../llm.ts";
 import { registerShellTools } from "../tools/shell.ts";
 import { registerFilesystemTools } from "../tools/filesystem.ts";
-import { recordLLM } from "../recorded-llm.ts";
 import { registerOtherLLMTools } from "../tools/other-llm.ts";
 import type { HistoryEvent, HistoryScope } from "../execution-history.ts";
 import { textOf } from "../llm-types.ts";
-import { checkImageInput } from "../image-content.ts";
 import { solidPng } from "./image-fixture.ts";
-import type { ImageBlock, LLMAdapter, LLMRequest, ToolContent } from "../llm-types.ts";
-import type { Session } from "../session-store.ts";
+import type { ImageBlock, LLMAdapter, ToolContent } from "../llm-types.ts";
+import { createSession } from "../session.ts";
+import type { Session } from "../session.ts";
+import { createAgent } from "../agent.ts";
+import type { AgentEvent } from "../agent.ts";
+import { ToolManager } from "../tool-manager.ts";
 
-// 실제 메인의 정의만 읽어 테스트한다. CLI 시작, dotenv, 사용자 스킬 로딩은 실행하지 않는다.
-const source = await readFile(new URL("../my-first-harness.ts", import.meta.url), "utf8");
-// 메인 소스에서 두 표시 문자열 사이의 정의를 테스트용으로 추출한다.
-function section(start: string, end: string) {
-  const begin = source.indexOf(start);
-  const finish = source.indexOf(end, begin);
-  assert.ok(begin >= 0 && finish > begin);
-  return source.slice(begin, finish);
-}
-const definitions = stripTypeScriptTypes([
-  section("class ToolManager", "const toolManager"),
-  "const toolManager = new ToolManager(); const skillManager = new SkillManager();",
-  section("function assembleContext", "let session = createSession();"),
-].join("\n"));
-
-// 실제 메인의 클래스·함수에 테스트 의존성을 연결하고 출력과 저장 내용을 수집한다.
+// 실제 코어를 import하고 모델·저장·화면 출력만 테스트용으로 연결한다.
 function harness(adapter: LLMAdapter) {
-  const events: string[] = [];
-  const saved: any[] = [];
+  const events: AgentEvent[] = [];
+  const saved: Session[] = [];
   const records: (HistoryEvent & HistoryScope)[] = [];
   const history = {
-    // 실제 실행 경로의 기록을 파일 대신 복사해 검사한다.
+    // 기록 시점의 값을 복사해 이후 messages 변경과 구분한다.
     async append(scope: HistoryScope, event: HistoryEvent) { records.push(structuredClone({ ...scope, ...event })); },
+    // 테스트 기록은 즉시 저장되므로 대기할 쓰기가 없다.
     async flush() {},
   };
-  const deps = {
-    SkillManager, validateToolArguments, adapter, ...context, summarize, textOf, randomUUID, history, recordLLM, checkImageInput,
-    paths: createHarnessPaths("/test", "/test-home"),
-    console: { log: (text: string) => events.push(text) },
-    saveSession: async (session: any) => { saved.push(structuredClone(session)); },
+  const paths = createHarnessPaths("/test", "/test-home");
+  const toolManager = new ToolManager();
+  const skillManager = new SkillManager();
+  const agent = createAgent({
+    adapter, toolManager, skillManager, history, paths,
+    // 화면 이벤트를 구조 그대로 수집해 CLI 문구와 독립적으로 검증한다.
+    onEvent: (event) => { events.push(event); },
+    // 실제 사용자 폴더 대신 저장 요청 시점의 스냅샷을 보관한다.
+    saveSession: async (session) => { saved.push(structuredClone(session)); },
+  });
+  return {
+    ...agent, toolManager, skillManager, events, saved, records,
+    // 테스트 작업 폴더에 속하는 독립 세션을 만든다.
+    createSession: () => createSession(paths.workspaceDirectory),
   };
-  const build = new Function("deps", `
-    const { ${Object.keys(deps).join(", ")} } = deps;
-    ${definitions}
-    return { toolManager, skillManager, turn, createSession, assembleContext };
-  `);
-  const runtime = build(deps) as {
-    toolManager: any;
-    skillManager: SkillManager;
-    turn(session: Session, input: string, images?: ImageBlock[]): Promise<string>;
-    createSession(): Session;
-    assembleContext(session: Session): LLMRequest;
-  };
-  return { ...runtime, events, saved, records };
 }
 
 // 실행 기록에서 대화 원문 이벤트만 골라 기존 메시지 검증에 사용한다.
@@ -208,7 +187,10 @@ test("실제 step/turn이 공통 형식으로 복수 툴을 실행하고 다음 
   runtime.toolManager.register({ name: "increase", description: "증가", parameters: {
     type: "object", properties: { amount: { type: "number" } }, required: ["amount"],
   }, execute({ amount }: { amount: number }) {
-    assert.deepEqual(runtime.events, ["확인 중", '[tool] increase {"amount":3}']);
+    assert.deepEqual(runtime.events, [
+      { type: "assistant-text", text: "확인 중" },
+      { type: "tool-start", name: "increase", arguments: '{"amount":3}' },
+    ]);
     count += amount; return count;
   } });
   runtime.toolManager.register({ name: "read", description: "조회", parameters: {}, execute: () => count });
@@ -298,7 +280,7 @@ test("MCP의 2020-12 인자 검증과 원격 실행 결과가 공통 turn 기록
     { name: "echo", arguments: { text: "fail" } },
     { name: "echo", arguments: { text: "ok" } },
   ]);
-  assert.equal(runtime.events.filter((event: string) => event.startsWith("[tool] mcp__test__echo")).length, 3);
+  assert.equal(runtime.events.filter((event) => event.type === "tool-start" && event.name === "mcp__test__echo").length, 3);
 });
 
 test("정상 종료가 아닌 응답에 있는 툴 호출은 실행하지 않는다", async () => {
@@ -365,7 +347,10 @@ test("실제 turn에 Responses를 연결해 중간 출력·인자 검증·복수
   },
   // 실제 툴 실행 전에 중간 텍스트가 출력됐는지 확인한다.
   execute({ amount }: { amount: number }) {
-    assert.deepEqual(runtime.events, ["확인 중", '[tool] increase {"amount":3}']);
+    assert.deepEqual(runtime.events, [
+      { type: "assistant-text", text: "확인 중" },
+      { type: "tool-start", name: "increase", arguments: '{"amount":3}' },
+    ]);
     count += amount; return count;
   } });
   runtime.toolManager.register({ name: "read", description: "조회", parameters: {}, execute: () => count });
@@ -421,7 +406,10 @@ test("실제 turn에서 Anthropic 중간 출력·검증 오류·복수 결과를
   },
   // 검증된 호출 한 번만 실행하고 중간 텍스트 출력 시점도 확인한다.
   execute({ amount }: { amount: number }) {
-    assert.deepEqual(runtime.events, ["확인 중", '[tool] increase {"amount":3}']);
+    assert.deepEqual(runtime.events, [
+      { type: "assistant-text", text: "확인 중" },
+      { type: "tool-start", name: "increase", arguments: '{"amount":3}' },
+    ]);
     count += amount; return count;
   } });
   const session = runtime.createSession();

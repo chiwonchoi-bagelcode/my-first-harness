@@ -1,30 +1,25 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { stripTypeScriptTypes } from "node:module";
 import { once } from "node:events";
 import test from "node:test";
 
-const source = await readFile(new URL("../my-first-harness.ts", import.meta.url), "utf8");
-const runtimeSource = stripTypeScriptTypes(source.slice(source.indexOf("let session = createSession();")));
 const managerUrl = new URL("../job-manager.ts", import.meta.url).href;
 
-// 실제 메인의 입력·종료 코드를 별도 프로세스에서 돌리되 모델·MCP·세션 저장은 대체한다.
+// 실제 CLI 함수를 별도 프로세스에서 돌리되 모델·MCP·세션 저장은 대체한다.
 function runtimeScript() {
   return `
-    import { createInterface } from 'node:readline/promises';
+    import { runCli } from ${JSON.stringify(new URL("../cli.ts", import.meta.url).href)};
+    import { createSession } from ${JSON.stringify(new URL("../session.ts", import.meta.url).href)};
     import { JobManager } from ${JSON.stringify(managerUrl)};
     const shellJobs = new JobManager();
     const mcpClients = [];
     // 외부 서버와 사용자 세션을 건드리지 않는 테스트 대체 함수들이다.
     const closeMcpServers = async () => {};
     const saveSession = async () => {};
-    const loadSession = async () => createSession();
+    const loadSession = async () => createSession(paths.workspaceDirectory);
     const compactAndSave = async () => {};
-    const paths = {};
+    const paths = { workspaceDirectory: '/test' };
     const history = { append: async () => {}, flush: async () => {} };
-    // 런타임 루프에 필요한 최소 세션을 만든다.
-    function createSession() { return { id: 'runtime-test' }; }
     // 종료되지 않는 실제 명령을 실행해 foreground/백그라운드 정리를 검사한다.
     async function turn(session, input) {
       const command = JSON.stringify(process.execPath) + ' -e "console.log(process.pid); setInterval(()=>{},1000)"';
@@ -40,7 +35,11 @@ function runtimeScript() {
       console.log('OWNED=' + result.stdout.trim());
       return 'STARTED';
     }
-    ${runtimeSource}
+    await runCli({
+      agent: { turn, compact: compactAndSave }, paths, history,
+      supportsImages: false, saveSession, loadSession,
+      dispose: async () => { await shellJobs.dispose(); await closeMcpServers(mcpClients); },
+    });
   `;
 }
 
