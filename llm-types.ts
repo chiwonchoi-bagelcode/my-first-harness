@@ -2,12 +2,13 @@
 // 사용자 입력이나 모델 답변의 텍스트 한 조각.
 export type TextBlock = { type: "text"; text: string };
 
-// PNG 원본을 세션에 보존하고 API 요청에서는 이미지 입력으로 변환한다.
+// 지원하는 이미지 원본을 세션에 보존하고 API 요청에서는 이미지 입력으로 변환한다.
 export type ImageBlock = {
   type: "image";
-  mediaType: "image/png";
+  mediaType: "image/png" | "image/jpeg" | "image/webp";
   data: string;
-  path: string;
+  // 파일에서 읽은 경우만 경로가 있다. MCP 인라인 이미지는 경로가 없을 수 있다.
+  path?: string;
   width: number;
   height: number;
 };

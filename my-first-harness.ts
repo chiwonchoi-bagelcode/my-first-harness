@@ -1,4 +1,4 @@
-import "dotenv/config";
+#!/usr/bin/env node
 
 import { registerCounterFeature } from "./tools/counter.ts";
 import { registerTimeTools } from "./tools/time.ts";
@@ -15,8 +15,10 @@ import { ExecutionHistory } from "./execution-history.ts";
 import { ToolManager } from "./tool-manager.ts";
 import { createAgent } from "./agent.ts";
 import { renderCliEvent, runCli } from "./cli.ts";
+import { loadEnvironment } from "./environment.ts";
 
 const paths = createHarnessPaths();
+loadEnvironment(paths);
 // 기본은 Bakery Farm Luna이며 luna 또는 haiku를 지정하면 AIProxy 연결을 사용한다.
 const modelChoice = process.argv[2] ?? "farm";
 const token = modelChoice === "farm" ? process.env.BCF_API_KEY : process.env.AIPROXY_TOKEN;

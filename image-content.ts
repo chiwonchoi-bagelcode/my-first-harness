@@ -2,13 +2,14 @@ import { open } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import sharp from "sharp";
 import { withoutReplayState } from "./llm-types.ts";
 import type { ContentBlock, ImageBlock, Message, ToolContent } from "./llm-types.ts";
 
 export const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 export const MAX_REQUEST_IMAGE_BYTES = 8 * 1024 * 1024;
 
-// 일반 파일만 제한된 크기로 읽고 PNG 헤더·치수를 확인한다. 픽셀 디코딩은 API가 담당한다.
+// 일반 파일만 제한된 크기로 읽고 공통 이미지 검사에 전달한다.
 export async function loadImage(path: string): Promise<ImageBlock> {
   const absolute = resolve(path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : path);
   // FIFO 같은 특수 파일도 open에서 멈추지 않고 아래 일반 파일 검사로 거절한다.
@@ -26,19 +27,34 @@ export async function loadImage(path: string): Promise<ImageBlock> {
       length += bytesRead;
     }
     if (length > MAX_IMAGE_BYTES) throw new Error("이미지는 4 MiB 이하여야 합니다.");
-    const bytes = buffer.subarray(0, length);
-    if (length < 45 || !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-      || bytes.readUInt32BE(8) !== 13 || bytes.toString("ascii", 12, 16) !== "IHDR"
-      || bytes.toString("ascii", length - 8, length - 4) !== "IEND") {
-      throw new Error("현재는 PNG 파일만 지원합니다. PNG 형식과 파일 손상 여부를 확인해 주세요.");
-    }
-    const width = bytes.readUInt32BE(16);
-    const height = bytes.readUInt32BE(20);
-    if (!width || !height || width > 4096 || height > 4096) {
-      throw new Error("이미지의 가로·세로는 각각 1~4096픽셀이어야 합니다. 크기를 줄여 주세요.");
-    }
-    return { type: "image", mediaType: "image/png", data: bytes.toString("base64"), path: absolute, width, height };
+    return imageFromBytes(buffer.subarray(0, length), absolute);
   } finally { await file.close(); }
+}
+
+// sharp로 형식·치수·픽셀 손상을 검사하되 정상 이미지의 원본 바이트는 보존한다.
+export async function imageFromBytes(bytes: Buffer, path?: string): Promise<ImageBlock> {
+  if (bytes.length > MAX_IMAGE_BYTES) throw new Error("이미지는 4 MiB 이하여야 합니다.");
+  const image = sharp(bytes, { failOn: "error", limitInputPixels: 4096 * 4096 });
+  const metadata = await image.metadata().catch(() => {
+    throw new Error("이미지를 읽을 수 없습니다. PNG·JPEG·WebP 형식과 파일 손상 여부를 확인해 주세요.");
+  });
+  const format = metadata.format;
+  if (format !== "png" && format !== "jpeg" && format !== "webp") {
+    throw new Error("현재는 PNG·JPEG·WebP 이미지만 지원합니다.");
+  }
+  if ((metadata.pages ?? 1) > 1) throw new Error("현재는 정지 이미지만 지원합니다. 한 프레임을 저장해 주세요.");
+  // EXIF 회전 정보가 축을 바꾸는 경우 화면에 보이는 가로·세로를 기록한다.
+  const transposed = (metadata.orientation ?? 1) >= 5;
+  const width = transposed ? metadata.height : metadata.width;
+  const height = transposed ? metadata.width : metadata.height;
+  if (!width || !height || width > 4096 || height > 4096) {
+    throw new Error("이미지의 가로·세로는 각각 1~4096픽셀이어야 합니다. 크기를 줄여 주세요.");
+  }
+  await image.raw().toBuffer().catch(() => {
+    throw new Error("이미지 픽셀을 읽을 수 없습니다. 파일 손상 여부를 확인해 주세요.");
+  });
+  return { type: "image", mediaType: `image/${format}`, data: bytes.toString("base64"),
+    ...(path ? { path } : {}), width, height };
 }
 
 // 문자열을 텍스트 블록으로 감싸되 기존 블록 배열은 그대로 유지한다.
@@ -48,7 +64,7 @@ export function contentBlocks(content: ToolContent): ContentBlock[] {
 
 // 전송할 이미지 바로 앞에 출처를 붙인다. 저장된 메시지는 변경하지 않는다.
 export function withImagePaths(blocks: ContentBlock[]): ContentBlock[] {
-  return blocks.flatMap((block): ContentBlock[] => block.type === "image" ? [
+  return blocks.flatMap((block): ContentBlock[] => block.type === "image" && block.path ? [
     { type: "text", text: `다음 이미지의 원본 파일 경로: ${JSON.stringify(block.path)}\n이미지를 읽은 시점의 경로이며, 현재 파일은 변경되거나 삭제되었을 수 있습니다.` },
     block,
   ] : [block]);
@@ -82,7 +98,7 @@ export function summaryContent(messages: Message[]): ContentBlock[] {
     return { type: "image", imageNumber: images.length, path: value.path, width: value.width, height: value.height };
   });
   return [{ type: "text", text }, ...images.flatMap((image, index): ContentBlock[] => [
-    { type: "text", text: `기록의 이미지 ${index + 1}: ${image.path}` }, image,
+    { type: "text", text: `기록의 이미지 ${index + 1}: ${image.path ?? "툴이 반환한 인라인 이미지"}` }, image,
   ])];
 }
 

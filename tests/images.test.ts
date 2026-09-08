@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import sharp from "sharp";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { attachmentPath, checkImageInput, imagesOf, loadImage, MAX_IMAGE_BYTES, summaryContent, withImagePaths } from "../image-content.ts";
+import { attachmentPath, checkImageInput, imageFromBytes, imagesOf, loadImage, MAX_IMAGE_BYTES, summaryContent, withImagePaths } from "../image-content.ts";
 import { compactSession, contextSize, pruneToolResults, shouldCompact } from "../context-manager.ts";
 import { createResponsesAdapter } from "../adapters/responses.ts";
 import { createAnthropicMessagesAdapter } from "../adapters/anthropic-messages.ts";
@@ -44,13 +45,44 @@ test("PNG를 읽고 파일 형식·크기·치수·경로 오류를 거절한다
   await assert.rejects(loadImage(path), /PNG/);
   await writeFile(path, Buffer.alloc(MAX_IMAGE_BYTES + 1));
   await assert.rejects(loadImage(path), /4 MiB/);
-  const large = Buffer.from(bytes);
-  large.writeUInt32BE(4097, 16);
+  const large = await sharp({ create: { width: 4097, height: 1, channels: 3, background: "red" } }).png().toBuffer();
   await writeFile(path, large);
   await assert.rejects(loadImage(path), /4096/);
   assert.equal(attachmentPath('/attach "/some dir/a.png"'), "/some dir/a.png");
   assert.equal(attachmentPath("/attach /some dir/a.png"), "/some dir/a.png");
   assert.throws(() => attachmentPath("/attach"), /사용법/);
+});
+
+test("PNG·JPEG·WebP를 확장자가 아닌 내용으로 판별하고 원본을 유지한다", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "harness-image-formats-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  for (const format of ["png", "jpeg", "webp"] as const) {
+    const bytes = await sharp(solidPng()).toFormat(format).toBuffer();
+    const path = join(directory, `${format}.wrong-extension`);
+    await writeFile(path, bytes);
+    const loaded = await loadImage(path);
+    assert.deepEqual(loaded, { type: "image", mediaType: `image/${format}`, path,
+      data: bytes.toString("base64"), width: 128, height: 128 });
+  }
+});
+
+test("미지원 형식·손상된 픽셀·애니메이션은 거절하고 EXIF 회전 치수는 반영한다", async () => {
+  const gif = await sharp(solidPng()).gif().toBuffer();
+  await assert.rejects(imageFromBytes(gif), /PNG·JPEG·WebP/);
+  const broken = solidPng();
+  broken.fill(0, 41, broken.length - 16);
+  await assert.rejects(imageFromBytes(broken), /손상/);
+  const frames = Buffer.from([255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0,
+    0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0, 255]);
+  const animated = await sharp(frames, { raw: { width: 2, height: 4, channels: 3, pageHeight: 2 } })
+    .webp({ loop: 0, delay: [100, 100] }).toBuffer();
+  await assert.rejects(imageFromBytes(animated), /정지 이미지/);
+  const rotated = await sharp({ create: { width: 20, height: 10, channels: 3, background: "red" } })
+    .withMetadata({ orientation: 6 }).jpeg().toBuffer();
+  const loaded = await imageFromBytes(rotated);
+  assert.equal(loaded.width, 10);
+  assert.equal(loaded.height, 20);
+  assert.equal(loaded.data, rotated.toString("base64"));
 });
 
 test("Responses는 첨부와 tool output을 모두 input_image로 전달한다", async (t) => {
@@ -106,6 +138,34 @@ test("여러 이미지의 경로는 각각 바로 앞에 붙고 특수문자는 
   assert.deepEqual(blocks, snapshot);
 });
 
+test("경로 없는 MCP 이미지도 Responses·Anthropic 툴 결과에 이미지로 전달한다", async (t) => {
+  const { path: _path, ...inline } = image;
+  const history: Message[] = [
+    { role: "assistant", content: [{ type: "tool-call", id: "screen", name: "screenshot", arguments: "{}" }] },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "screen", content: [
+      { type: "text", text: "현재 화면" }, inline,
+    ] }] },
+  ];
+  t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    if (String(url).endsWith("/responses")) {
+      assert.deepEqual(body.input[1].output, [
+        { type: "input_text", text: "현재 화면" },
+        { type: "input_image", image_url: `data:image/png;base64,${inline.data}`, detail: "auto" },
+      ]);
+      return Response.json({ status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "red" }] }] });
+    }
+    assert.deepEqual(body.messages[1].content[0].content, [
+      { type: "text", text: "현재 화면" },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: inline.data } },
+    ]);
+    return Response.json({ type: "message", role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "red" }] });
+  });
+  for (const adapter of [createResponsesAdapter(config), createAnthropicMessagesAdapter(config)]) {
+    await adapter.generate({ system: "", messages: history, tools: [] });
+  }
+});
+
 test("미지원 연결은 첨부와 툴 이미지 모두 네트워크 요청 전에 거절한다", async (t) => {
   t.mock.method(globalThis, "fetch", async () => { throw new Error("전송하면 안 됨"); });
   const adapters = [createResponsesAdapter({ ...config, supportsImages: false }),
@@ -118,6 +178,35 @@ test("미지원 연결은 첨부와 툴 이미지 모두 네트워크 요청 전
   assert.throws(() => checkImageInput([{ role: "user", content: [
     { ...image, data: "A".repeat(12 * 1024 * 1024) },
   ] }], true), /8 MiB/);
+});
+
+test("JPEG·WebP도 JSON 왕복 후 Responses·Anthropic의 첨부와 툴 결과에 전달한다", async (t) => {
+  for (const format of ["jpeg", "webp"] as const) {
+    const bytes = await sharp(solidPng()).toFormat(format).toBuffer();
+    const inline = await imageFromBytes(bytes);
+    const history: Message[] = [
+      { role: "user", content: [inline] },
+      { role: "assistant", content: [{ type: "tool-call", id: "screen", name: "screenshot", arguments: "{}" }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "screen", content: [inline] }] },
+    ];
+    t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      if (String(url).endsWith("/responses")) {
+        const wire = { type: "input_image", image_url: `data:image/${format};base64,${inline.data}`, detail: "auto" };
+        assert.deepEqual(body.input[0].content, [wire]);
+        assert.deepEqual(body.input[2].output, [wire]);
+        return Response.json({ status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "확인" }] }] });
+      }
+      const wire = { type: "image", source: { type: "base64", media_type: `image/${format}`, data: inline.data } };
+      assert.deepEqual(body.messages[0].content, [wire]);
+      assert.deepEqual(body.messages[2].content[0].content, [wire]);
+      return Response.json({ type: "message", role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "확인" }] });
+    });
+    for (const adapter of [createResponsesAdapter(config), createAnthropicMessagesAdapter(config)]) {
+      await adapter.generate({ system: "", messages: JSON.parse(JSON.stringify(history)), tools: [] });
+    }
+    t.mock.restoreAll();
+  }
 });
 
 test("이미지는 문자열 자르기·문자 수 계산에서 보호되고 처음 보기 전에는 자동 압축하지 않는다", () => {

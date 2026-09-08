@@ -10,11 +10,13 @@ node_modules/
 # Session data
 .my-first-harness/sessions/
 .my-first-harness/mcp-files/
+.my-first-harness/mcp-playwright/
 
 # Build and test output
 dist/
 coverage/
 *.tsbuildinfo
+/my-first-harness-*.tgz
 
 # Bun compiled executable and temporary build artifacts
 /my-first-harness
