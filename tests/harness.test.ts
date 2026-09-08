@@ -8,6 +8,8 @@ import { validateToolArguments } from "../tool-schema.ts";
 import { discoverMcpTools } from "../mcp-client.ts";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { createChatCompletionsAdapter } from "../adapters/chat-completions.ts";
+import { createResponsesAdapter } from "../adapters/responses.ts";
+import { createAnthropicMessagesAdapter } from "../adapters/anthropic-messages.ts";
 import * as context from "../context-manager.ts";
 import { createHarnessPaths } from "../harness-paths.ts";
 import { summarize } from "../llm.ts";
@@ -192,4 +194,123 @@ test("자동 압축 후 step은 요약된 messages만 보내고 history는 유�
   assert.match(textOf(session.history[0]), /긴 작업/);
   assert.equal(session.messages.length, 2);
   assert.equal(runtime.saved.length, 2);
+});
+
+test("실제 turn에 Responses를 연결해 중간 출력·인자 검증·복수 툴 결과·reasoning 재전송을 확인한다", async (t) => {
+  const bodies: any[] = [];
+  const native = [
+    { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "test-ciphertext" },
+    { type: "message", id: "msg_1", role: "assistant", status: "completed", phase: "commentary",
+      content: [{ type: "output_text", text: "확인 중", annotations: [] }] },
+    { type: "function_call", id: "fc_a", call_id: "a", name: "increase", arguments: '{"amount":3}', status: "completed" },
+    { type: "function_call", id: "fc_b", call_id: "b", name: "read", arguments: "{}", status: "completed" },
+    { type: "function_call", id: "fc_c", call_id: "c", name: "missing", arguments: "{}", status: "completed" },
+  ];
+  t.mock.method(globalThis, "fetch", async (_url: any, init: any) => {
+    bodies.push(JSON.parse(init.body));
+    return Response.json({ status: "completed", output: bodies.length === 1 ? native : [
+      { type: "message", id: "msg_2", role: "assistant", status: "completed", phase: "final_answer",
+        content: [{ type: "output_text", text: "현재 값은 3", annotations: [] }] },
+    ] });
+  });
+  const runtime = harness(createResponsesAdapter({
+    provider: "test", model: "gpt-5.6-luna", baseURL: "https://example.invalid/v1", apiKey: "test",
+  }));
+  let count = 0;
+  runtime.toolManager.register({ name: "increase", description: "증가", parameters: {
+    type: "object", properties: { amount: { type: "number" } }, required: ["amount"],
+  },
+  // 실제 툴 실행 전에 중간 텍스트가 출력됐는지 확인한다.
+  execute({ amount }: { amount: number }) {
+    assert.deepEqual(runtime.events, ["확인 중", '[tool] increase {"amount":3}']);
+    count += amount; return count;
+  } });
+  runtime.toolManager.register({ name: "read", description: "조회", parameters: {}, execute: () => count });
+  const session = runtime.createSession();
+  assert.equal(await runtime.turn(session, "3 올리고 알려줘"), "현재 값은 3");
+  assert.equal(count, 3);
+  assert.equal(bodies.length, 2);
+  assert.match(bodies[0].instructions, /현재 작업 디렉토리: \/test/);
+  assert.deepEqual(bodies[1].input.slice(1, 1 + native.length), native);
+  assert.deepEqual(bodies[1].input.slice(-3), [
+    { type: "function_call_output", call_id: "a", output: "3" },
+    { type: "function_call_output", call_id: "b", output: "3" },
+    { type: "function_call_output", call_id: "c", output: "툴 오류: 툴 요청 오류: 등록되지 않은 툴입니다: missing" },
+  ]);
+  assert.deepEqual(session.messages, session.history);
+  assert.equal(session.history.length, 6);
+});
+
+test("Responses의 잘린 함수 호출은 실제 turn에서도 실행하지 않는다", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => Response.json({
+    status: "incomplete", incomplete_details: { reason: "max_output_tokens" },
+    output: [{ type: "function_call", call_id: "a", name: "danger", arguments: "{", status: "incomplete" }],
+  }));
+  const runtime = harness(createResponsesAdapter({
+    provider: "test", model: "gpt-5.6-luna", baseURL: "https://example.invalid/v1", apiKey: "test",
+  }));
+  let executed = false;
+  runtime.toolManager.register({ name: "danger", parameters: {}, execute: () => { executed = true; } });
+  await assert.rejects(runtime.turn(runtime.createSession(), "실행"), /max-tokens/);
+  assert.equal(executed, false);
+  assert.equal(runtime.saved.length, 1);
+});
+
+test("실제 turn에서 Anthropic 중간 출력·검증 오류·복수 결과를 같은 user 메시지로 보낸다", async (t) => {
+  const bodies: any[] = [];
+  t.mock.method(globalThis, "fetch", async (_url: any, init: any) => {
+    bodies.push(JSON.parse(init.body));
+    return Response.json({ type: "message", role: "assistant", stop_reason: bodies.length === 1 ? "tool_use" : "end_turn",
+      content: bodies.length === 1 ? [
+        { type: "text", text: "확인 중" },
+        { type: "tool_use", id: "a", name: "increase", input: { amount: 3 } },
+        { type: "tool_use", id: "b", name: "increase", input: { amount: "bad" } },
+        { type: "tool_use", id: "c", name: "missing", input: {} },
+      ] : [{ type: "text", text: "현재 값은 3" }],
+    });
+  });
+  const runtime = harness(createAnthropicMessagesAdapter({
+    provider: "test", model: "claude-haiku-4-5-20251001", baseURL: "https://example.invalid/v1", apiKey: "test",
+  }));
+  let count = 0;
+  runtime.toolManager.register({ name: "increase", description: "증가", parameters: {
+    type: "object", properties: { amount: { type: "number" } }, required: ["amount"],
+  },
+  // 검증된 호출 한 번만 실행하고 중간 텍스트 출력 시점도 확인한다.
+  execute({ amount }: { amount: number }) {
+    assert.deepEqual(runtime.events, ["확인 중", '[tool] increase {"amount":3}']);
+    count += amount; return count;
+  } });
+  const session = runtime.createSession();
+  assert.equal(await runtime.turn(session, "3 올려줘"), "현재 값은 3");
+  assert.equal(count, 3);
+  assert.equal(bodies.length, 2);
+  assert.match(bodies[0].system, /현재 작업 디렉토리: \/test/);
+  assert.equal(bodies[1].messages.length, 3);
+  const results = bodies[1].messages[2];
+  assert.equal(results.role, "user");
+  assert.deepEqual(results.content.map((block: any) => block.tool_use_id), ["a", "b", "c"]);
+  assert.equal(results.content[0].content, "3");
+  assert.equal(results.content[0].is_error, undefined);
+  assert.equal(results.content[1].is_error, true);
+  assert.match(results.content[1].content, /number/);
+  assert.equal(results.content[2].is_error, true);
+  assert.match(results.content[2].content, /등록되지 않은 툴/);
+  assert.deepEqual(session.messages, session.history);
+  assert.equal(session.history.length, 6);
+});
+
+test("Anthropic max_tokens 응답에 있는 툴도 실행하지 않고 세션을 보존한다", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => Response.json({
+    type: "message", role: "assistant", stop_reason: "max_tokens",
+    content: [{ type: "tool_use", id: "a", name: "danger", input: {} }],
+  }));
+  const runtime = harness(createAnthropicMessagesAdapter({
+    provider: "test", model: "claude-haiku-4-5-20251001", baseURL: "https://example.invalid/v1", apiKey: "test",
+  }));
+  let executed = false;
+  runtime.toolManager.register({ name: "danger", parameters: {}, execute: () => { executed = true; } });
+  await assert.rejects(runtime.turn(runtime.createSession(), "실행"), /max-tokens/);
+  assert.equal(executed, false);
+  assert.equal(runtime.saved.length, 1);
 });

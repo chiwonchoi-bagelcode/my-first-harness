@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "test": "node --test tests/*.test.ts",
-    "test:mcp": "node tests/mcp-smoke.ts"
+    "test:mcp": "node tests/mcp-smoke.ts",
+    "test:responses": "node tests/responses-smoke.ts",
+    "test:anthropic": "node tests/anthropic-smoke.ts"
   },
   "keywords": [],
   "author": "",
