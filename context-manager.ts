@@ -5,14 +5,13 @@ import type { Message } from "./llm-types.ts";
 // 시스템 프롬프트, 스킬, 툴 정의의 크기는 이 기준에 포함하지 않는다.
 export const COMPACTION_THRESHOLD_CHARS = 60_000;
 
-// 원문 기록과 압축 가능한 요청용 기록을 함께 가진 세션 상태.
-type SessionContext = { history: Message[]; messages: Message[] };
+// 압축 가능한 요청용 대화 상태이며 실행 기록 저장은 호출자가 담당한다.
+type SessionContext = { messages: Message[] };
 // 대화 기록을 받아 요약 문자열을 비동기로 반환하는 함수의 타입.
 type Summarizer = (conversation: Message[]) => Promise<string>;
 
-// 새 메시지를 원문 history와 요청용 messages 양쪽에 추가한다.
+// 호출자가 원문을 기록한 뒤 현재 요청용 대화에 메시지를 추가한다.
 export function recordMessage(session: SessionContext, message: Message) {
-  session.history.push(message);
   session.messages.push(message);
 }
 
@@ -45,13 +44,13 @@ export function pruneToolResults(session: SessionContext) {
           + chars.slice(-1024).join(""),
       };
     });
-    // history와 공유하는 원본 객체와 블록은 수정하지 않는다.
+    // 호출자가 보관한 원본 객체와 블록은 수정하지 않는다.
     return { ...message, content };
   });
   return pruned;
 }
 
-// 미완료 툴 호출이 없으면 대화를 요약하고 원문은 유지한 채 messages만 교체한다.
+// 미완료 툴 호출이 없으면 대화를 요약하고 messages를 교체한다.
 export async function compactSession(session: SessionContext, summarize: Summarizer) {
   const conversation = withoutReplayState(session.messages);
   if (conversation.length === 0) return false;
@@ -81,7 +80,7 @@ export async function compactSession(session: SessionContext, summarize: Summari
     throw new Error("요약이 기존 대화보다 짧지 않아 기존 대화를 유지합니다.");
   }
 
-  // 성공한 요약만 적용한다. 원본 history는 수정하지 않는다.
+  // 성공한 요약만 적용한다. 디스크의 실행 기록은 변경하지 않는다.
   session.messages = [summaryMessage];
   return true;
 }

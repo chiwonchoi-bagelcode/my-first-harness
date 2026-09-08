@@ -31,6 +31,7 @@ export function registerOtherLLMTools(
       required: ["ask"],
     },
     // 모델이 작성한 질문을 독립적인 LLM 호출에 전달한다.
-    execute: (arguments_: any) => getOtherLLMsOpinion(arguments_.ask, adapter),
+    execute: (arguments_: any, context?: { llm: LLMAdapter }) =>
+      getOtherLLMsOpinion(arguments_.ask, context?.llm ?? adapter),
   });
 }

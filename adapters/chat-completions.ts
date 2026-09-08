@@ -1,4 +1,6 @@
 import { textOf } from "../llm-types.ts";
+import { requestJSON } from "./http.ts";
+import { usageOf } from "./usage.ts";
 import type { AssistantMessage, LLMAdapter, Message, StopReason } from "../llm-types.ts";
 
 // Chat Completions 연결에 사용할 경로 이름, API 주소, 모델과 인증 키.
@@ -112,14 +114,11 @@ function stopReason(reason: string): StopReason {
 export function createChatCompletionsAdapter(config: Config): LLMAdapter {
   return {
     // 공통 요청을 API에 보내고 응답 형식과 종료 이유를 확인해 공통 결과로 반환한다.
-    async generate(request) {
-      const response = await fetch(`${config.baseURL.replace(/\/$/, "")}/chat/completions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${config.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
+    async generate(request, observer) {
+      const { response, result } = await requestJSON({
+        api: "chat-completions", provider: config.provider, model: config.model,
+        url: `${config.baseURL.replace(/\/$/, "")}/chat/completions`,
+        body: {
           model: config.model,
           messages: [
             ...(request.system ? [{ role: "system", content: request.system }] : []),
@@ -133,9 +132,8 @@ export function createChatCompletionsAdapter(config: Config): LLMAdapter {
           } : {}),
           ...(request.maxOutputTokens !== undefined
             ? { max_completion_tokens: request.maxOutputTokens } : {}),
-        }),
-      });
-      const result = await response.json();
+        },
+      }, { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" }, observer);
       if (!response.ok || !result.choices?.[0]?.message) {
         throw new Error(result.error?.message ?? `LLM 요청 실패: HTTP ${response.status}`);
       }
@@ -148,7 +146,7 @@ export function createChatCompletionsAdapter(config: Config): LLMAdapter {
       if (reason === "stop" && message.content.some((block) => block.type === "tool-call")) {
         throw new Error("정상 종료와 툴 호출이 함께 반환되었습니다.");
       }
-      return { message, stopReason: reason };
+      return { message, stopReason: reason, ...usageOf("chat-completions", result) };
     },
   };
 }

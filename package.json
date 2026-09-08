@@ -4,10 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "build": "mkdir -p dist && cd dist && bun build --compile ../my-first-harness.ts --outfile my-first-harness",
     "test": "node --test tests/*.test.ts",
     "test:mcp": "node tests/mcp-smoke.ts",
     "test:responses": "node tests/responses-smoke.ts",
-    "test:anthropic": "node tests/anthropic-smoke.ts"
+    "test:anthropic": "node tests/anthropic-smoke.ts",
+    "test:history": "node tests/history-smoke.ts"
   },
   "keywords": [],
   "author": "",

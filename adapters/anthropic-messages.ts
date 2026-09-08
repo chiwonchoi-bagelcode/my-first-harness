@@ -1,4 +1,6 @@
 import { textOf } from "../llm-types.ts";
+import { requestJSON } from "./http.ts";
+import { usageOf } from "./usage.ts";
 import type { AssistantMessage, LLMAdapter, Message, StopReason } from "../llm-types.ts";
 
 // Messages 주소(v1까지), 모델, 인증 방식과 기본 출력 한도를 지정한다.
@@ -125,15 +127,12 @@ function stopReason(reason: unknown, message: AssistantMessage): StopReason {
 export function createAnthropicMessagesAdapter(config: Config): LLMAdapter {
   return {
     // 요청·응답 형식과 인증을 변환하며 기존 하네스의 툴 실행 흐름은 유지한다.
-    async generate(request) {
+    async generate(request, observer) {
       if (!config.apiKey) throw new Error("Anthropic API 인증 키가 없습니다.");
-      const response = await fetch(`${config.baseURL.replace(/\/$/, "")}/messages`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json", "anthropic-version": "2023-06-01",
-          ...(config.auth === "bearer" ? { Authorization: `Bearer ${config.apiKey}` } : { "x-api-key": config.apiKey }),
-        },
-        body: JSON.stringify({
+      const { response, result } = await requestJSON({
+        api: "anthropic-messages", provider: config.provider, model: config.model,
+        url: `${config.baseURL.replace(/\/$/, "")}/messages`,
+        body: {
           model: config.model,
           max_tokens: request.maxOutputTokens ?? config.maxOutputTokens ?? 4096,
           ...(request.system ? { system: request.system } : {}),
@@ -141,12 +140,11 @@ export function createAnthropicMessagesAdapter(config: Config): LLMAdapter {
           ...(request.tools.length ? { tools: request.tools.map((tool) => ({
             name: tool.name, description: tool.description, input_schema: tool.parameters,
           })) } : {}),
-        }),
-      });
-      let result: unknown;
-      try { result = await response.json(); } catch {
-        throw new Error(`LLM 요청 실패: HTTP ${response.status} (JSON 응답이 아닙니다.)`);
-      }
+        },
+      }, {
+        "Content-Type": "application/json", "anthropic-version": "2023-06-01",
+        ...(config.auth === "bearer" ? { Authorization: `Bearer ${config.apiKey}` } : { "x-api-key": config.apiKey }),
+      }, observer);
       if (!response.ok || !isObject(result) || result.error || result.type !== "message" || result.role !== "assistant") {
         const error = isObject(result) && isObject(result.error) ? result.error.message : undefined;
         throw new Error(typeof error === "string" ? error : `LLM 요청 실패: HTTP ${response.status} (Anthropic 메시지 형식 확인 필요)`);
@@ -157,7 +155,7 @@ export function createAnthropicMessagesAdapter(config: Config): LLMAdapter {
         adapter: "anthropic-messages", provider: config.provider, model: config.model,
         data: { contentKey: JSON.stringify(message.content), content: blocks },
       };
-      return { message, stopReason: stopReason(result.stop_reason, message) };
+      return { message, stopReason: stopReason(result.stop_reason, message), ...usageOf("anthropic-messages", result) };
     },
   };
 }

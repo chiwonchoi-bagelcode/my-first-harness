@@ -16,8 +16,11 @@ import { connectMcpServers, closeMcpServers } from "./mcp-client.ts";
 import { createMcpServerConfigs } from "./mcp-servers.ts";
 import { validateToolArguments } from "./tool-schema.ts";
 import { createModelAdapter } from "./model-config.ts";
+import { ExecutionHistory } from "./execution-history.ts";
+import type { HistoryScope } from "./execution-history.ts";
+import { recordLLM } from "./recorded-llm.ts";
 import { textOf } from "./llm-types.ts";
-import type { LLMRequest, ToolDefinition } from "./llm-types.ts";
+import type { LLMAdapter, LLMRequest, Message, ToolDefinition } from "./llm-types.ts";
 import type { Session } from "./session-store.ts";
 import {
   compactSession,
@@ -31,6 +34,7 @@ const paths = createHarnessPaths();
 const token = process.env.AIPROXY_TOKEN;
 // 인자를 생략하면 Luna, haiku를 붙이면 Anthropic Messages를 사용한다.
 const adapter = createModelAdapter(process.argv[2] ?? "luna", token);
+const history = new ExecutionHistory(paths, token ? [token] : []);
 
 // ================ tool manager ==================
 // 툴 정의와 실행 함수를 보관하고 호출 인자 검증 및 실행을 담당한다.
@@ -52,7 +56,7 @@ class ToolManager {
   }
 
   // 툴과 인자를 검증한 뒤 실행하고, 호출·실행 오류도 결과로 반환한다.
-  async execute(name: string, argumentsJson: string) {
+  async execute(name: string, argumentsJson: string, context?: { llm: LLMAdapter }) {
     const tool = this.tools.find((tool) => tool.name === name);
 
     if (!tool) {
@@ -70,7 +74,7 @@ class ToolManager {
     if (validationError) return { content: validationError, isError: true };
 
     try {
-      return { content: String(await tool.execute(arguments_)) };
+      return { content: String(await tool.execute(arguments_, context)) };
     } catch (error) {
       const message = error instanceof Error
         ? error.message
@@ -91,7 +95,7 @@ registerCounterFeature(toolManager);
 registerTimeTools(toolManager);
 registerOtherLLMTools(toolManager, adapter);
 registerFilesystemTools(toolManager);
-registerShellTools(toolManager);
+const shellJobs = registerShellTools(toolManager, paths.workspaceDirectory);
 await loadSkills(skillManager, paths);
 const mcpClients = await connectMcpServers(toolManager, await createMcpServerConfigs(paths));
 
@@ -111,15 +115,17 @@ function assembleContext(session: Session): LLMRequest {
 
 // ======================= step ==============================
 // 요약 실패에 대비해 세션을 먼저 저장하고 압축 성공 후 다시 저장한다.
-async function compactAndSave(session: Session) {
-  // 요약 API가 실패하더라도 지금까지의 원문을 resume할 수 있게 먼저 저장한다.
+async function compactAndSave(session: Session, scope: HistoryScope = { sessionId: session.id }) {
+  // 요약 API가 실패해도 요약 직전 messages로 resume할 수 있게 먼저 저장한다.
   await saveSession(session, paths);
   const before = contextSize(session);
   console.log("[context] 대화를 요약합니다...");
   const compacted = await compactSession(session, (conversation) =>
-    summarize(adapter, conversation),
+    summarize(recordLLM(adapter, history, scope, "compaction"), conversation),
   );
   if (compacted) {
+    await history.append(scope, { type: "context-update", reason: "compact", beforeChars: before,
+      afterChars: contextSize(session), messages: session.messages });
     await saveSession(session, paths);
     console.log(`[context] 압축 완료: ${before} → ${contextSize(session)}자`);
   } else {
@@ -127,8 +133,14 @@ async function compactAndSave(session: Session) {
   }
 }
 
+// 원문을 JSONL에 먼저 보존한 뒤 모델에게 보낼 대화에 추가한다.
+async function rememberMessage(session: Session, message: Message, scope: HistoryScope) {
+  await history.append(scope, { type: "message", message });
+  recordMessage(session, message);
+}
+
 // 필요하면 컨텍스트를 줄이고 모델을 한 번 호출해 응답을 기록한다.
-async function step(session: Session) {
+async function step(session: Session, scope: HistoryScope) {
   // console.log(session.messages);
 
   // turn()이 이전 step의 모든 툴 결과를 기록한 뒤 여기로 돌아온다.
@@ -136,14 +148,16 @@ async function step(session: Session) {
     const before = contextSize(session);
     const pruned = pruneToolResults(session);
     if (pruned > 0) {
+      await history.append(scope, { type: "context-update", reason: "prune", beforeChars: before,
+        afterChars: contextSize(session), messages: session.messages });
       await saveSession(session, paths);
       console.log(`[context] 툴 결과 ${pruned}개 정리: ${before} → ${contextSize(session)}자`);
     }
-    if (shouldCompact(session)) await compactAndSave(session);
+    if (shouldCompact(session)) await compactAndSave(session, scope);
   }
   const context = assembleContext(session);
-  const result = await adapter.generate(context);
-  recordMessage(session, result.message);
+  const result = await recordLLM(adapter, history, scope, "step").generate(context);
+  await rememberMessage(session, result.message, scope);
 
   return result;
 }
@@ -151,38 +165,54 @@ async function step(session: Session) {
 // ================================ turn =================================
 // 사용자 입력을 기록하고 모델 호출과 툴 실행을 반복해 최종 답변을 반환한다.
 async function turn(session: Session, input: string) {
-  recordMessage(session, {
+  const turnScope = { sessionId: session.id, turnId: randomUUID() };
+  await history.append(turnScope, { type: "turn-start" });
+  await rememberMessage(session, {
     role: "user",
     content: [{ type: "text", text: input }],
-  });
+  }, turnScope);
 
-  while (true) {
-    const output = await step(session);
-    if (output.stopReason === "stop") {
-      return textOf(output.message);
+  try {
+    for (let stepNumber = 1; ; stepNumber++) {
+      const scope = { ...turnScope, step: stepNumber };
+      const output = await step(session, scope);
+      if (output.stopReason === "stop") {
+        await history.append(scope, { type: "turn-end", outcome: "completed" });
+        return textOf(output.message);
+      }
+      if (output.stopReason !== "tool-calls") {
+        // 잘린 응답의 툴 인자를 실행하거나, 작업 완료로 취급하지 않는다.
+        await saveSession(session, paths);
+        throw new Error(`LLM 응답이 정상 완료되지 않았습니다: ${output.stopReason}`);
+      }
+
+      const text = textOf(output.message);
+      if (text) console.log(text);
+
+      for (const toolCall of output.message.content) {
+        if (toolCall.type !== "tool-call") continue;
+        console.log(`[tool] ${toolCall.name} ${toolCall.arguments}`);
+        await history.append(scope, { type: "tool-start", toolCallId: toolCall.id,
+          name: toolCall.name, arguments: toolCall.arguments });
+        const started = performance.now();
+        const toolResult = await toolManager.execute(
+          toolCall.name,
+          toolCall.arguments,
+          { llm: recordLLM(adapter, history, { ...scope, parentToolCallId: toolCall.id }, "other-llm") },
+        );
+        await history.append(scope, { type: "tool-end", toolCallId: toolCall.id,
+          durationMs: performance.now() - started, result: toolResult });
+
+        await rememberMessage(session, {
+          role: "tool",
+          content: [{ type: "tool-result", toolCallId: toolCall.id, ...toolResult }],
+        }, scope);
+      }
     }
-    if (output.stopReason !== "tool-calls") {
-      // 잘린 응답의 툴 인자를 실행하거나, 작업 완료로 취급하지 않는다.
-      await saveSession(session, paths);
-      throw new Error(`LLM 응답이 정상 완료되지 않았습니다: ${output.stopReason}`);
-    }
-
-    const text = textOf(output.message);
-    if (text) console.log(text);
-
-    for (const toolCall of output.message.content) {
-      if (toolCall.type !== "tool-call") continue;
-      console.log(`[tool] ${toolCall.name} ${toolCall.arguments}`);
-      const toolResult = await toolManager.execute(
-        toolCall.name,
-        toolCall.arguments,
-      );
-
-      recordMessage(session, {
-        role: "tool",
-        content: [{ type: "tool-result", toolCallId: toolCall.id, ...toolResult }],
-      });
-    }
+  } catch (error) {
+    await history.append(turnScope, { type: "turn-end", outcome: "error",
+      error: error instanceof Error ? error.message : String(error) });
+    throw error;
   }
 }
 
@@ -205,7 +235,6 @@ Use the readTextFile tool — not shell commands like cat — to inspect text fi
 
 Use the writeTextFile tool to create files or completely replace file contents. Existing files are overwritten, so read an existing file first.
 `,
-    history: [],
     messages: [],
   };
 }
@@ -214,15 +243,38 @@ let session = createSession();
 
 // ========================= harness runtime =============================
 const terminal = createInterface({ input: process.stdin, output: process.stdout });
-terminal.on("SIGINT", () => {
+let cleanupPromise: Promise<void> | undefined;
+let interrupted = false;
+// 정상 종료와 중단이 겹쳐도 셸 작업과 MCP 연결을 한 번만 정리하고 실패를 알린다.
+function cleanupRuntime() {
+  cleanupPromise ??= Promise.allSettled([shellJobs.dispose(), closeMcpServers(mcpClients)])
+    .then(async (results) => {
+      await history.append({ sessionId: session.id }, { type: "session-close", reason: interrupted ? "SIGINT" : "runtime-exit" });
+      await history.flush();
+      const failures = results.filter((result) => result.status === "rejected");
+      if (failures.length) throw new AggregateError(failures.map((result) => result.reason), "런타임 정리 실패");
+    });
+  return cleanupPromise;
+}
+// 터미널 Ctrl+C와 운영체제 SIGINT 모두 같은 정리를 거쳐 종료한다.
+function handleInterrupt() {
+  interrupted = true;
   terminal.close();
-  void closeMcpServers(mcpClients).finally(() => process.exit(130));
-});
+  void cleanupRuntime().catch(console.error).finally(() => process.exit(130));
+}
+terminal.on("SIGINT", handleInterrupt);
+process.once("SIGINT", handleInterrupt);
 console.log(`session: ${session.id}`);
 
 try {
+  await history.append({ sessionId: session.id }, { type: "session-start",
+    workspaceDirectory: session.workspaceDirectory, system: session.system });
+  await saveSession(session, paths);
   while (true) {
     const input = await terminal.question("> ");
+    if (input.trim().startsWith("/")) {
+      await history.append({ sessionId: session.id }, { type: "command", input });
+    }
 
     if (input.trim() === "/quit") {
       break;
@@ -230,6 +282,9 @@ try {
 
     if (input.trim() === "/new") {
       session = createSession();
+      await history.append({ sessionId: session.id }, { type: "session-start",
+        workspaceDirectory: session.workspaceDirectory, system: session.system });
+      await saveSession(session, paths);
       console.log(`new session: ${session.id}`);
       continue;
     }
@@ -238,6 +293,7 @@ try {
       const id = input.slice("/resume ".length).trim();
 
       session = await loadSession(id, paths);
+      await history.append({ sessionId: session.id }, { type: "session-resume", messageCount: session.messages.length });
 
       console.log(`resumed session: ${session.id}`);
       continue;
@@ -257,7 +313,11 @@ try {
 
     console.log(output);
   }
+} catch (error) {
+  // Ctrl+C로 question 또는 실행 중 명령이 취소된 오류는 중단 처리에서 마무리한다.
+  if (!interrupted) throw error;
 } finally {
   terminal.close();
-  await closeMcpServers(mcpClients);
+  await cleanupRuntime();
+  process.removeListener("SIGINT", handleInterrupt);
 }

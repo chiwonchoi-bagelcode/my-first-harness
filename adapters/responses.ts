@@ -1,4 +1,6 @@
 import { textOf } from "../llm-types.ts";
+import { requestJSON } from "./http.ts";
+import { usageOf } from "./usage.ts";
 import type { AssistantMessage, LLMAdapter, Message, StopReason } from "../llm-types.ts";
 
 // Responses 연결에 사용할 경로 이름, API 주소, 모델과 인증 키.
@@ -123,12 +125,12 @@ function stopReason(result: Record<string, unknown>, output: OutputItem[], messa
 export function createResponsesAdapter(config: Config): LLMAdapter {
   return {
     // 공통 요청을 Responses로 보내고 공통 답변과 다음 요청용 원본 출력 항목을 반환한다.
-    async generate(request) {
+    async generate(request, observer) {
       if (!config.apiKey) throw new Error("Responses API 인증 키가 없습니다.");
-      const response = await fetch(`${config.baseURL.replace(/\/$/, "")}/responses`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const { response, result } = await requestJSON({
+        api: "responses", provider: config.provider, model: config.model,
+        url: `${config.baseURL.replace(/\/$/, "")}/responses`,
+        body: {
           model: config.model,
           store: false,
           include: ["reasoning.encrypted_content"],
@@ -141,26 +143,20 @@ export function createResponsesAdapter(config: Config): LLMAdapter {
             strict: false,
           })) } : {}),
           ...(request.maxOutputTokens !== undefined ? { max_output_tokens: request.maxOutputTokens } : {}),
-        }),
-      });
-      let result: unknown;
-      try {
-        result = await response.json();
-      } catch {
-        throw new Error(`LLM 요청 실패: HTTP ${response.status} (JSON 응답이 아닙니다.)`);
-      }
+        },
+      }, { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" }, observer);
       if (!response.ok || !isObject(result) || result.error || result.status === "failed") {
         const error = isObject(result) && isObject(result.error) ? result.error.message : undefined;
         throw new Error(typeof error === "string" ? error : `LLM 요청 실패: HTTP ${response.status}`);
       }
       const output = readOutput(result.output);
       const message: AssistantMessage = { role: "assistant", content: contentOf(output) };
-      // 출력 항목만 저장한다. usage·응답 ID 등 전체 HTTP 결과는 대화 기록에 넣지 않는다.
+      // 재전송에 필요한 항목만 메시지에 넣고 전체 HTTP 응답은 실행 로그에 별도로 남긴다.
       message.replayState = {
         adapter: "responses", provider: config.provider, model: config.model,
         data: { contentKey: JSON.stringify(message.content), output },
       };
-      return { message, stopReason: stopReason(result, output, message) };
+      return { message, stopReason: stopReason(result, output, message), ...usageOf("responses", result) };
     },
   };
 }

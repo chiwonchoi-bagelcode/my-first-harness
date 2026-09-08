@@ -58,16 +58,51 @@ export type LLMRequest = {
 // 이번 모델 응답이 끝난 이유를 API와 무관하게 구분한 값.
 export type StopReason = "stop" | "tool-calls" | "max-tokens" | "other";
 
-// 어댑터가 반환하는 공통 assistant 메시지와 종료 이유.
+// 제공자가 보고한 토큰 수다. 누락은 미확인이며 0으로 채우지 않는다.
+export type LLMUsage = {
+  // 캐시 읽기·쓰기를 포함한 전체 입력 토큰 수.
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  cacheWriteInputTokens?: number;
+  // 출력 토큰에 포함된 부분 집합이므로 출력에 다시 더하지 않는다.
+  reasoningOutputTokens?: number;
+};
+
+// 인증 정보 없이 기록할 실제 API 요청 본문과 연결 식별 정보.
+export type WireRequest = {
+  api: "chat-completions" | "responses" | "anthropic-messages";
+  provider: string;
+  model: string;
+  url: string;
+  body: unknown;
+};
+
+// 변환 실패 응답도 분석할 수 있도록 보존하는 HTTP 결과와 사용량.
+export type WireResponse = {
+  status: number;
+  requestId?: string;
+  body: unknown;
+  usage?: LLMUsage;
+};
+
+// API 전송 직전과 응답 해석 전에 기록을 기다리는 선택적 관찰 함수.
+export type LLMObserver = {
+  onRequest(request: WireRequest): Promise<void>;
+  onResponse(response: WireResponse): Promise<void>;
+};
+
+// 어댑터가 반환하는 공통 assistant 메시지, 종료 이유와 사용량.
 export type LLMResult = {
   message: AssistantMessage;
   stopReason: StopReason;
+  usage?: LLMUsage;
 };
 
 // 각 API 어댑터가 공통 요청과 결과를 주고받기 위해 지킬 계약.
 export interface LLMAdapter {
   // 공통 요청을 받아 모델을 한 번 호출하고 공통 결과로 반환한다.
-  generate(request: LLMRequest): Promise<LLMResult>;
+  generate(request: LLMRequest, observer?: LLMObserver): Promise<LLMResult>;
 }
 
 // 메시지의 텍스트 블록만 순서대로 이어 붙여 문자열로 반환한다.

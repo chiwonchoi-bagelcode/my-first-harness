@@ -103,7 +103,7 @@ test("전문과 참조 파일은 기존 readTextFile 결과로만 컨텍스트�
   const tools: any[] = [];
   registerFilesystemTools({ register: (tool: any) => tools.push(tool) });
   const reader = tools.find((tool) => tool.name === "readTextFile");
-  const session: Session = { id: "skill-test", workspaceDirectory: paths.workspaceDirectory, system: "테스트용 지침", history: [], messages: [] };
+  const session: Session = { id: "skill-test", workspaceDirectory: paths.workspaceDirectory, system: "테스트용 지침", messages: [] };
   // 실제 조립처럼 시스템 지침과 대화 기록을 분리한 요청을 검사한다.
   const request = () => JSON.stringify({ system: [session.system, ...manager.getInstructions()].join("\n\n"), messages: session.messages });
   assert.doesNotMatch(request(), /본문 지침|REFERENCE_ONLY_AFTER_READ/);
@@ -125,7 +125,6 @@ test("전문과 참조 파일은 기존 readTextFile 결과로만 컨텍스트�
   assert.match(request(), /REFERENCE_ONLY_AFTER_READ/);
   await saveSession(session, paths);
   const resumed = await loadSession(session.id, paths);
-  assert.deepEqual(resumed.history, session.history);
   assert.deepEqual(resumed.messages, session.messages);
 });
 

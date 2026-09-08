@@ -23,21 +23,21 @@ function toolText(message: Message): string {
 }
 // 컨텍스트 압축을 검증할 긴 사용자 입력이 담긴 테스트 세션을 만든다.
 function createSession(): Session {
-  const session: Session = { id: "test-session", workspaceDirectory: "/test", system: "시스템 지침", history: [], messages: [] };
+  const session: Session = { id: "test-session", workspaceDirectory: "/test", system: "시스템 지침", messages: [] };
   recordMessage(session, user("테트리스 만들어줘. " + "기록 ".repeat(300)));
   return session;
 }
 
-test("새 메시지는 양쪽에 기록하고, 압축은 messages만 교체한다", async () => {
+test("새 메시지는 요청용 대화에 추가하고 압축은 원본 객체를 바꾸지 않고 교체한다", async () => {
   const session = createSession();
-  const original = structuredClone(session.history);
+  const original = session.messages;
+  const snapshot = structuredClone(original);
   await compactSession(session, async () => "테트리스 구현 중.");
-  assert.deepEqual(session.history, original);
+  assert.deepEqual(original, snapshot);
   assert.equal(session.system, "시스템 지침");
   assert.equal(session.messages.length, 1);
   assert.match(textOf(session.messages[0]), /테트리스 구현 중/);
   recordMessage(session, user("점수 기능 추가해줘"));
-  assert.equal(textOf(session.history.at(-1)!), "점수 기능 추가해줘");
   assert.equal(textOf(session.messages.at(-1)!), "점수 기능 추가해줘");
 });
 
@@ -62,7 +62,7 @@ test("두 번째 요약에는 이전 요약과 새 대화만 전달한다", asyn
     assert.doesNotMatch(JSON.stringify(conversation), /테트리스 만들어줘/);
     return "두 번째 요약";
   });
-  assert.match(textOf(session.history[0]), /테트리스 만들어줘/);
+  assert.match(textOf(session.messages[0]), /두 번째 요약/);
 });
 
 test("요약 실패·빈 결과·더 긴 결과는 기존 상태를 바꾸지 않는다", async () => {
@@ -95,12 +95,12 @@ test("한 응답의 모든 툴 결과를 받기 전에는 요약하지 않는다
 });
 
 test("빈 대화에서는 요약 API를 호출하지 않는다", async () => {
-  const session = { history: [], messages: [] };
+  const session = { messages: [] };
   assert.equal(shouldCompact(session, 0), false);
   assert.equal(await compactSession(session, async () => { throw new Error("호출되면 안 됨"); }), false);
 });
 
-test("저장/resume 이후에도 원문과 압축 상태가 유지된다", async () => {
+test("저장/resume는 압축된 messages 스냅샷을 그대로 유지한다", async () => {
   const directory = await mkdtemp(join(tmpdir(), "harness-compaction-test-"));
   try {
     const paths = createHarnessPaths(directory, directory);
@@ -110,7 +110,7 @@ test("저장/resume 이후에도 원문과 압축 상태가 유지된다", async
     const resumed = await loadSession(session.id, paths);
     assert.deepEqual(resumed, session);
     recordMessage(resumed, user("계속해"));
-    assert.match(textOf(resumed.history[0]), /테트리스 만들어줘/);
+    assert.equal("history" in resumed, false);
     assert.match(textOf(resumed.messages[0]), /저장할 요약/);
     assert.equal(textOf(resumed.messages.at(-1)!), "계속해");
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -120,10 +120,10 @@ test("긴 툴 결과의 앞뒤만 남기고 원본과 호출 ID를 보존한다"
   const session = createSession();
   const original = tool("A".repeat(4096) + "M".repeat(10_000) + "Z".repeat(1024));
   recordMessage(session, original);
-  const history = structuredClone(session.history);
+  const snapshot = structuredClone(original);
   const earlierMessages = session.messages.slice(0, -1);
   assert.equal(pruneToolResults(session), 1);
-  assert.deepEqual(session.history, history);
+  assert.deepEqual(original, snapshot);
   assert.deepEqual(session.messages.slice(0, -1), earlierMessages);
   assert.deepEqual(session.messages.at(-1), tool("A".repeat(4096) + "\n\n[... tool result middle pruned ...]\n\n" + "Z".repeat(1024)));
   assert.notEqual(session.messages.at(-1), original);
@@ -164,7 +164,8 @@ test("정리 후에도 크면 요약 함수는 줄인 결과를 받는다", asyn
   recordMessage(session, user("목표 ".repeat(20_000)));
   recordMessage(session, { role: "assistant", content: [{ type: "tool-call", id: "call-1", name: "readTextFile", arguments: "{}" }] });
   recordMessage(session, tool("x".repeat(20_000)));
-  const history = structuredClone(session.history);
+  const original = session.messages;
+  const snapshot = structuredClone(original);
   pruneToolResults(session);
   assert.equal(shouldCompact(session), true);
   await compactSession(session, async (conversation) => {
@@ -172,7 +173,7 @@ test("정리 후에도 크면 요약 함수는 줄인 결과를 받는다", asyn
     assert.ok(toolText(conversation.at(-1)!).length < 8192);
     return "목표를 이어서 수행한다.";
   });
-  assert.deepEqual(session.history, history);
+  assert.deepEqual(original, snapshot);
 });
 
 test("정리한 툴 결과와 assistant 재전송 정보 모두 저장/resume 후 유지된다", async () => {
@@ -189,7 +190,8 @@ test("정리한 툴 결과와 assistant 재전송 정보 모두 저장/resume �
     await saveSession(session, paths);
     const resumed = await loadSession(session.id, paths);
     assert.deepEqual(resumed, session);
-    assert.equal(toolText(resumed.history.at(-1)!), "원문 ".repeat(10_000));
+    assert.equal("history" in resumed, false);
+    assert.match(JSON.stringify(resumed.messages), /replayState/);
     assert.match(toolText(resumed.messages.at(-1)!), /tool result middle pruned/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
@@ -207,7 +209,7 @@ test("재전송 정보는 요약 입력과 문자 수에서 제외하고 압축�
     return "요약";
   });
   assert.doesNotMatch(JSON.stringify(session.messages), /replayState/);
-  assert.match(JSON.stringify(session.history), /replayState/);
+  assert.match(JSON.stringify(message), /replayState/);
 });
 
 test("한 tool 메시지 안의 여러 결과도 각각 정리한다", () => {

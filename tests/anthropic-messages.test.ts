@@ -18,7 +18,7 @@ const thinking = { type: "thinking", thinking: "test reasoning", signature: "tes
 
 test("실제 기본 툴 전체에 객체 스키마가 있으며 인자 없는 툴도 Anthropic 필수 type을 보낸다", async (t) => {
   const definitions = builtinToolDefinitions();
-  assert.equal(definitions.length, 8);
+  assert.equal(definitions.length, 11);
   t.mock.method(globalThis, "fetch", async (_url: any, init: any) => {
     const body = JSON.parse(init.body);
     for (const tool of body.tools) {
@@ -27,7 +27,7 @@ test("실제 기본 툴 전체에 객체 스키마가 있으며 인자 없는 �
     assert.deepEqual(body.tools.map((tool: any) => tool.name), definitions.map((tool) => tool.name));
     return reply();
   });
-  for (const name of ["counterUP", "getCounterVal", "getCurrentTime"]) {
+  for (const name of ["counterUP", "getCounterVal", "getCurrentTime", "listJobs"]) {
     assert.deepEqual(definitions.find((tool) => tool.name === name)?.parameters, { type: "object", properties: {} });
   }
   await createAnthropicMessagesAdapter(config).generate({ ...empty, tools: definitions });
