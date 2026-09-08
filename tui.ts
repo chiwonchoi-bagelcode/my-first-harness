@@ -1,6 +1,6 @@
 import { createElement as h, useEffect, useState, useSyncExternalStore } from "react";
 import { Box, Text, render, useInput, useWindowSize } from "ink";
-import { TuiInput } from "./tui-input.ts";
+import { TuiInput, layoutInput } from "./tui-input.ts";
 import wrapAnsi from "wrap-ansi";
 import { stripVTControlCharacters } from "node:util";
 import { commandSuggestions, createTuiSession } from "./tui-session.ts";
@@ -29,15 +29,24 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
 }) {
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
   const { rows, columns } = useWindowSize();
+  // Ink 7.1.1의 fullscreen 경로는 끝 개행을 생략해 useCursor가 한 줄 어긋나므로 마지막 줄을 비운다.
+  const screenRows = Math.max(1, rows - 1);
   const [input, setInput] = useState("");
   const [selected, setSelected] = useState(0);
   const [menuHidden, setMenuHidden] = useState(false);
   const [inputVersion, setInputVersion] = useState(0);
   const [scroll, setScroll] = useState(0);
-  const candidates = menuHidden ? [] : commandSuggestions(input, supportsImages);
+  const [resumeSelected, setResumeSelected] = useState(0);
+  const picker = state.resumePicker;
+  const candidates = menuHidden || picker ? [] : commandSuggestions(input, supportsImages);
   const choice = candidates[Math.min(selected, Math.max(0, candidates.length - 1))];
   const menuRows = candidates.length ? candidates.length + 3 : 0;
-  const feedRows = Math.max(1, rows - menuRows - 7);
+  const inputWidth = Math.max(2, columns - 6);
+  const inputRows = Math.min(5, Math.max(1, screenRows - menuRows - 10), layoutInput(input, inputWidth).lines.length);
+  const feedRows = Math.max(0, screenRows - menuRows - inputRows - 6);
+  const resumeIndex = Math.min(resumeSelected, Math.max(0, (picker?.sessions.length ?? 0) - 1));
+  const resumeCount = Math.max(1, feedRows - 4);
+  const resumeStart = Math.max(0, resumeIndex - resumeCount + 1);
   const lines = conversationLines(state.entries, Math.max(1, columns));
   const offset = Math.min(scroll, Math.max(0, lines.length - feedRows));
   const end = Math.max(0, lines.length - offset);
@@ -45,6 +54,8 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
 
   // 새 세션에서는 화면 위치를 최신 내용으로 되돌린다.
   useEffect(() => { setScroll(0); }, [state.sessionId]);
+  // 목록을 새로 열면 최신 저장 세션부터 선택한다.
+  useEffect(() => { setResumeSelected(0); }, [picker]);
   // 명령 선택은 실행하지 않고 입력창에 채우며 새 입력 커서를 끝으로 옮긴다.
   function complete() {
     if (!choice) return;
@@ -64,7 +75,18 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
     void controller.submit(value);
   }
   useInput((value, key) => {
+    if (key.eventType === "release") return;
     if (key.ctrl && value === "c") { onQuit(); return; }
+    if (picker) {
+      if (state.busy) return;
+      if (key.escape) { controller.dismissResumePicker(); return; }
+      if (key.upArrow) setResumeSelected(Math.max(0, resumeIndex - 1));
+      if (key.downArrow) setResumeSelected(Math.min(picker.sessions.length - 1, resumeIndex + 1));
+      if (key.return && !key.shift && picker.sessions[resumeIndex]) {
+        void controller.submit(`/resume ${picker.sessions[resumeIndex].id}`);
+      }
+      return;
+    }
     if (key.pageUp) setScroll(Math.min(lines.length, offset + feedRows));
     if (key.pageDown) setScroll(Math.max(0, offset - feedRows));
     if (state.busy) return;
@@ -78,28 +100,38 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
     return h(Text, { color: "yellow" }, "터미널을 40열 × 16줄 이상으로 넓혀주세요. Ctrl+C 종료");
   }
 
-  return h(Box, { flexDirection: "column", width: columns, height: Math.max(rows, 8) },
+  return h(Box, { flexDirection: "column", width: columns, height: screenRows },
     h(Text, { bold: true, color: "cyan", wrap: "truncate-end" }, `My First Harness · ${model} · ${state.sessionId}`),
     h(Text, { dimColor: true }, "─".repeat(Math.max(1, columns))),
-    h(Box, { flexDirection: "column", height: feedRows, flexShrink: 0, overflow: "hidden" },
+    picker ? h(Box, { flexDirection: "column", height: feedRows, flexShrink: 0, overflow: "hidden" },
+      h(Text, { bold: true, color: "cyan", wrap: "truncate-end" }, "세션 선택 · 현재 프로젝트 · 최신 저장 순"),
+      ...(picker.sessions.length ? picker.sessions.slice(resumeStart, resumeStart + resumeCount).map((session, index) =>
+        h(Text, { key: session.id, color: resumeStart + index === resumeIndex ? "cyan" : undefined, wrap: "truncate-end" },
+          `${resumeStart + index === resumeIndex ? "❯" : " "} ${new Date(session.updatedAt).toLocaleString("ko-KR")} · ${displayText(session.title)}${session.id === state.sessionId ? " (현재)" : ""}`))
+        : [h(Text, { key: "empty", dimColor: true }, "저장된 세션이 없습니다.")]),
+      h(Text, { dimColor: true, wrap: "truncate-end" }, picker.sessions[resumeIndex]?.id ?? ""),
+      h(Text, { dimColor: true, wrap: "truncate-end" }, `↑↓ 선택 · Enter 재개 · Esc 취소${picker.skippedFiles ? ` · 읽을 수 없는 파일 ${picker.skippedFiles}개 제외` : ""}`),
+      state.entries.at(-1)?.kind === "error" ? h(Text, { color: "red", wrap: "truncate-end" }, displayText(state.entries.at(-1)!.text)) : null)
+    : h(Box, { flexDirection: "column", height: feedRows, flexShrink: 0, overflow: "hidden" },
       ...visible.map((line, index) => h(Text, { key: index, wrap: "truncate-end",
         color: line.kind === "user" ? "cyan" : line.kind === "error" ? "red" : undefined,
         dimColor: line.kind === "tool" || line.kind === "notice",
       }, line.text)),
       state.entries.length ? null : h(Text, { dimColor: true }, "메시지를 입력하세요. /를 누르면 명령과 사용법을 볼 수 있습니다.")),
     candidates.length ? h(Box, { flexDirection: "column", height: menuRows, flexShrink: 0 },
-      h(Text, { color: "cyan" }, "명령 선택 · ↑↓ 이동 · Enter/Tab 채우기 · Esc 닫기"),
+      h(Text, { color: "cyan", wrap: "truncate-end" }, "명령 선택 · ↑↓ 이동 · Enter/Tab 채우기 · Esc 닫기"),
       ...candidates.map((command) => h(Text, { key: command.name, color: command === choice ? "cyan" : undefined,
         bold: command === choice, wrap: "truncate-end" }, `${command === choice ? "❯" : " "} ${command.name}  ${command.description}`)),
       h(Text, { wrap: "truncate-end" }, `사용법: ${choice?.usage}`),
       h(Text, { dimColor: true, wrap: "truncate-end" }, "입력창에 채운 후 Enter를 다시 누르면 실행합니다.")) : null,
-    h(Box, { borderStyle: "round", borderColor: state.busy ? "gray" : "cyan", height: 3, flexShrink: 0, overflow: "hidden" },
+    h(Box, { borderStyle: "round", borderColor: state.busy || picker ? "gray" : "cyan", height: inputRows + 2, flexShrink: 0, overflow: "hidden" },
       h(Text, { color: "cyan" }, "> "),
-      h(TuiInput, { key: inputVersion, value: input, width: Math.max(1, columns - 6), focus: !state.busy,
-        placeholder: state.busy ? "실행 중 · 새 요청은 완료 후 입력" : "메시지 또는 /명령",
+      h(TuiInput, { key: inputVersion, value: input, width: inputWidth, height: inputRows,
+        cursorStart: { x: 3, y: 3 + feedRows + menuRows }, focus: !state.busy && !picker, menuOpen: Boolean(choice),
+        placeholder: picker ? "목록에서 세션을 선택하세요." : state.busy ? "실행 중 · 새 요청은 완료 후 입력" : "메시지 또는 /명령",
         onChange(value) { setInput(value); setSelected(0); setMenuHidden(false); }, onSubmit: submit })),
     h(Text, { color: state.busy ? "yellow" : "green", wrap: "truncate-end" }, `상태: ${state.status}${state.pendingImages ? ` · 첨부 ${state.pendingImages}개` : ""}`),
-    h(Text, { dimColor: true, wrap: "truncate-end" }, `${offset ? "이전 내용 보는 중 · " : ""}Enter 전송 · / 명령 · PgUp/PgDn 대화 보기 · Ctrl+C 종료`),
+    h(Text, { dimColor: true, wrap: "truncate-end" }, `${offset ? "이전 내용 · " : ""}Enter 전송 · Shift+Enter/Cmd+J 줄바꿈 (미지원 시 Ctrl+J) · / 명령 · Ctrl+C 종료`),
   );
 }
 
@@ -135,7 +167,7 @@ export function createTui() {
         await current.start();
         if (!current.getSnapshot().closed) {
           app = render(h(TuiScreen, { controller: current, model: options.model, supportsImages: options.supportsImages, onQuit: interrupt }),
-            { alternateScreen: true, exitOnCtrlC: false, interactive: true });
+            { alternateScreen: true, exitOnCtrlC: false, interactive: true, kittyKeyboard: { mode: "auto" } });
           await app.waitUntilExit();
         }
       } finally {

@@ -1,5 +1,5 @@
 import { createSession } from "./session.ts";
-import { loadSession as restoreSession, saveSession as persistSession } from "./session-store.ts";
+import { listSessions as readSessions, loadSession as restoreSession, saveSession as persistSession } from "./session-store.ts";
 import { attachmentPath, checkImageInput, loadImage } from "./image-content.ts";
 import { textOf } from "./llm-types.ts";
 import type { ImageBlock } from "./llm-types.ts";
@@ -10,7 +10,7 @@ import type { HarnessPaths } from "./harness-paths.ts";
 // 입력창에서 선택할 수 있는 명령의 이름과 사용법이다.
 export const TUI_COMMANDS = [
   { name: "/new", usage: "/new", description: "새 대화를 시작합니다." },
-  { name: "/resume", usage: "/resume <session-id>", description: "저장한 세션을 이어서 엽니다." },
+  { name: "/resume", usage: "/resume [session-id]", description: "목록에서 고르거나 ID로 세션을 엽니다." },
   { name: "/compact", usage: "/compact", description: "현재 대화를 요약해 컨텍스트를 줄입니다." },
   { name: "/attach", usage: '/attach "/path/to/image.png"', description: "다음 메시지에 PNG 이미지를 첨부합니다." },
   { name: "/quit", usage: "/quit", description: "작업과 연결을 정리하고 종료합니다." },
@@ -33,6 +33,7 @@ export type TuiState = {
   busy: boolean;
   status: string;
   closed: boolean;
+  resumePicker?: Awaited<ReturnType<typeof readSessions>>;
 };
 // 이미 만들어진 코어와 저장·종료 함수를 TUI에 연결한다.
 export type TuiOptions = {
@@ -44,12 +45,13 @@ export type TuiOptions = {
   dispose: () => Promise<void>;
   saveSession?: typeof persistSession;
   loadSession?: typeof restoreSession;
+  listSessions?: typeof readSessions;
 };
 
 // 화면과 독립적으로 명령·세션·첨부 대기열을 관리해 테스트에서도 그대로 실행한다.
 export function createTuiSession(options: TuiOptions) {
   const { agent, history, paths, supportsImages, dispose,
-    saveSession = persistSession, loadSession = restoreSession } = options;
+    saveSession = persistSession, loadSession = restoreSession, listSessions = readSessions } = options;
   let session = createSession(paths.workspaceDirectory);
   let images: ImageBlock[] = [];
   let failedTurn = false;
@@ -108,11 +110,15 @@ export function createTuiSession(options: TuiOptions) {
           append("notice", `첨부: ${image.path} (${image.width}×${image.height}) — 다음 메시지에 전달`);
         } else if (name === "/new" || name === "/resume") {
           const id = trimmed.slice(name.length).trim();
-          if (name === "/resume" && !id) throw new Error(`사용법: ${command.usage}`);
+          if (name === "/resume" && !id) {
+            const resumePicker = await listSessions(paths);
+            if (!state.closed) update({ resumePicker });
+            return;
+          }
           session = name === "/new" ? createSession(paths.workspaceDirectory) : await loadSession(id, paths);
           images = [];
           failedTurn = false;
-          update({ sessionId: session.id, pendingImages: 0, entries: session.messages.flatMap((message): TuiEntry[] => {
+          update({ sessionId: session.id, pendingImages: 0, resumePicker: undefined, entries: session.messages.flatMap((message): TuiEntry[] => {
             const text = textOf(message);
             return text && message.role !== "tool" ? [{ kind: message.role === "user" ? "user" : "assistant", text }] : [];
           }) });
@@ -155,6 +161,8 @@ export function createTuiSession(options: TuiOptions) {
   }
   return {
     start, submit, close, onEvent,
+    // 선택 취소는 현재 세션과 첨부를 바꾸지 않고 목록만 닫는다.
+    dismissResumePicker() { update({ resumePicker: undefined }); },
     // 마지막 불변 스냅샷을 반환해 화면의 불필요한 재렌더링을 피한다.
     getSnapshot: () => state,
     // 구독이 끝나면 해당 화면의 리스너만 제거한다.
