@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "build": "mkdir -p dist && cd dist && bun build --compile ../my-first-harness.ts --outfile my-first-harness",
+    "tui": "node my-first-harness.ts --tui",
     "test": "node --test tests/*.test.ts",
     "test:mcp": "node tests/mcp-smoke.ts",
     "test:responses": "node tests/responses-smoke.ts",
@@ -31,9 +32,16 @@
     "@modelcontextprotocol/server-memory": "^2026.8.31",
     "ajv": "^8.20.0",
     "dotenv": "^17.4.2",
+    "ink": "7.1.1",
+    "react": "^19.2.8",
+    "react-devtools-core": "^7.0.1",
+    "string-width": "^8.2.2",
+    "wrap-ansi": "^10.0.1",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@types/node": "^26.4.1"
+    "@types/node": "^26.4.1",
+    "@types/react": "^19.2.18",
+    "ink-testing-library": "^4.0.0"
   }
 }

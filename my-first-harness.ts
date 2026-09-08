@@ -18,11 +18,14 @@ import { renderCliEvent, runCli } from "./cli.ts";
 
 const paths = createHarnessPaths();
 // 기본은 Bakery Farm Luna이며 luna 또는 haiku를 지정하면 AIProxy 연결을 사용한다.
-const modelChoice = process.argv[2] ?? "farm";
+const modelChoice = process.argv.slice(2).filter((arg) => arg !== "--tui")[0] ?? "farm";
 const token = modelChoice === "farm" ? process.env.BCF_API_KEY : process.env.AIPROXY_TOKEN;
 const adapter = createModelAdapter(modelChoice, token);
 const history = new ExecutionHistory(paths,
   [process.env.BCF_API_KEY, process.env.AIPROXY_TOKEN].filter((key): key is string => !!key));
+
+// 기본 CLI는 유지하며 --tui일 때만 화면 라이브러리를 로드한다.
+const tui = process.argv.includes("--tui") ? (await import("./tui.ts")).createTui() : undefined;
 
 const toolManager = new ToolManager();
 const skillManager = new SkillManager();
@@ -36,10 +39,10 @@ await loadSkills(skillManager, paths);
 const mcpClients = await connectMcpServers(toolManager, await createMcpServerConfigs(paths));
 
 const agent = createAgent({
-  adapter, toolManager, skillManager, history, paths, onEvent: renderCliEvent,
+  adapter, toolManager, skillManager, history, paths, onEvent: tui?.onEvent ?? renderCliEvent,
 });
 
-await runCli({
+const interfaceOptions = {
   agent, paths, history, supportsImages: adapter.supportsImages,
   // CLI가 끝날 때 이 실행에서 생성한 셸 작업과 MCP 연결을 함께 정리한다.
   async dispose() {
@@ -47,4 +50,6 @@ await runCli({
     const failures = results.filter((result) => result.status === "rejected");
     if (failures.length) throw new AggregateError(failures.map((result) => result.reason), "런타임 정리 실패");
   },
-});
+};
+if (tui) await tui.run({ ...interfaceOptions, model: modelChoice });
+else await runCli(interfaceOptions);

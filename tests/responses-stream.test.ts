@@ -81,6 +81,12 @@ test("메인 선택 코드가 farm에 BCF 키를 쓰며 누락 시 AIProxy 키�
   }
   assert.equal(choose({ argv: ["node", "main.ts", "farm"], env: { AIPROXY_TOKEN: "proxy" } },
     (_name: string, key: string | undefined) => key), undefined);
+  for (const [args, expected] of [
+    [["--tui"], "farm"], [["--tui", "haiku"], "haiku"], [["luna", "--tui"], "luna"],
+  ] as const) {
+    assert.deepEqual(choose({ argv: ["node", "main.ts", ...args], env: { AIPROXY_TOKEN: "proxy", BCF_API_KEY: "farm" } },
+      (name: string, key: string) => ({ name, key })), { name: expected, key: expected === "farm" ? "farm" : "proxy" });
+  }
 });
 
 test("완료 항목을 합쳐 복수 툴·reasoning을 보존하고 JSON 왕복 후 호출 ID별 결과를 재전송한다", async (t) => {
