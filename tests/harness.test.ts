@@ -231,10 +231,10 @@ test("없는 툴·잘못된 JSON/인자·실행 오류를 결과로 기록하고
     return { stopReason: "stop", message: { role: "assistant", content: [{ type: "text", text: "복구 완료" }] } };
   } });
   let executed = 0;
-  runtime.toolManager.register({ name: "valid", parameters: {
+  runtime.toolManager.register({ name: "valid", description: "검증 테스트", parameters: {
     type: "object", properties: { amount: { type: "number" } }, required: ["amount"],
   }, execute: ({ amount }: { amount: number }) => { executed++; return amount; } });
-  runtime.toolManager.register({ name: "broken", parameters: {}, execute: async () => { throw new Error("실행 실패"); } });
+  runtime.toolManager.register({ name: "broken", description: "실패 테스트", parameters: {}, execute: async () => { throw new Error("실행 실패"); } });
   assert.equal(await runtime.turn(runtime.createSession(), "실행"), "복구 완료");
   assert.equal(executed, 1);
   assert.equal(steps, 2);
@@ -291,7 +291,7 @@ test("정상 종료가 아닌 응답에 있는 툴 호출은 실행하지 않는
       ] } };
     } });
     let executed = false;
-    runtime.toolManager.register({ name: "danger", parameters: {}, execute: () => { executed = true; } });
+    runtime.toolManager.register({ name: "danger", description: "실행 차단 테스트", parameters: {}, execute: () => { executed = true; } });
     await assert.rejects(runtime.turn(runtime.createSession(), "실행"), /정상 완료되지 않았습니다/);
     assert.equal(executed, false);
     assert.equal(runtime.saved.length, 1);
@@ -378,7 +378,7 @@ test("Responses의 잘린 함수 호출은 실제 turn에서도 실행하지 않
     provider: "test", model: "gpt-5.6-luna", baseURL: "https://example.invalid/v1", apiKey: "test",
   }));
   let executed = false;
-  runtime.toolManager.register({ name: "danger", parameters: {}, execute: () => { executed = true; } });
+  runtime.toolManager.register({ name: "danger", description: "실행 차단 테스트", parameters: {}, execute: () => { executed = true; } });
   await assert.rejects(runtime.turn(runtime.createSession(), "실행"), /max-tokens/);
   assert.equal(executed, false);
   assert.equal(runtime.saved.length, 1);
@@ -440,7 +440,7 @@ test("Anthropic max_tokens 응답에 있는 툴도 실행하지 않고 세션을
     provider: "test", model: "claude-haiku-4-5-20251001", baseURL: "https://example.invalid/v1", apiKey: "test",
   }));
   let executed = false;
-  runtime.toolManager.register({ name: "danger", parameters: {}, execute: () => { executed = true; } });
+  runtime.toolManager.register({ name: "danger", description: "실행 차단 테스트", parameters: {}, execute: () => { executed = true; } });
   await assert.rejects(runtime.turn(runtime.createSession(), "실행"), /max-tokens/);
   assert.equal(executed, false);
   assert.equal(runtime.saved.length, 1);

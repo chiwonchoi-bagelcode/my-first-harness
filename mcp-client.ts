@@ -92,6 +92,22 @@ export async function discoverMcpTools(client: Client, serverName: string): Prom
   return tools;
 }
 
+// 서버 하나에 연결해 툴 목록을 받는다. 실패하면 생성한 연결부터 닫는다.
+export async function connectMcpServer(server: McpServerConfig) {
+  const client = new Client({ name: "my-first-harness", version: "1.0.0" });
+  try {
+    const transport = server.transport === "stdio"
+      ? new StdioClientTransport({ command: server.command, args: server.args, cwd: server.cwd, env: server.env })
+      : new StreamableHTTPClientTransport(new URL(server.url), { requestInit: { headers: server.headers } });
+    await client.connect(transport, requestOptions);
+    const tools = await discoverMcpTools(client, server.name);
+    return { client, tools, server };
+  } catch (error) {
+    await client.close().catch(() => {});
+    throw error;
+  }
+}
+
 // 서버 연결 후 발견한 도구를 등록하고 종료 때 닫을 클라이언트를 반환한다.
 export async function connectMcpServers(
   toolManager: { register(tool: McpTool): void },
@@ -102,24 +118,9 @@ export async function connectMcpServers(
   }
   // 서버마다 연결은 별도지만, 툴은 모두 기존 ToolManager에 등록한다.
   const connections = await Promise.all(servers.map(async (server) => {
-    const client = new Client({ name: "my-first-harness", version: "1.0.0" });
     try {
-      const transport = server.transport === "stdio"
-        ? new StdioClientTransport({
-            command: server.command,
-            args: server.args,
-            cwd: server.cwd,
-            // SDK의 기본 환경 + 명시한 값만 전달한다. process.env 전체를 넘기지 않는다.
-            env: server.env,
-          })
-        : new StreamableHTTPClientTransport(new URL(server.url), {
-            requestInit: { headers: server.headers },
-          });
-      await client.connect(transport, requestOptions);
-      const tools = await discoverMcpTools(client, server.name);
-      return { client, tools, server };
+      return await connectMcpServer(server);
     } catch (error) {
-      await client.close().catch(() => {});
       console.warn(`[mcp] ${server.name} 연결 실패 — 건너뜁니다: ${error instanceof Error ? error.message : error}`);
       return undefined;
     }
@@ -135,7 +136,7 @@ export async function connectMcpServers(
   return clients;
 }
 
-// 런타임 on/off 기능이 아니라 하네스 종료 시 자식 프로세스/연결을 정리하기 위한 코드다.
+// 여러 서버를 연결한 테스트·CLI 호출부에서 소유 연결들을 함께 닫는다.
 export async function closeMcpServers(clients: Client[]) {
   await Promise.allSettled(clients.map((client) => client.close()));
 }

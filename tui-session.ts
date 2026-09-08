@@ -6,6 +6,8 @@ import type { ImageBlock } from "./llm-types.ts";
 import type { Agent, AgentEvent } from "./agent.ts";
 import type { HistorySink } from "./execution-history.ts";
 import type { HarnessPaths } from "./harness-paths.ts";
+import type { ExtensionControls, ExtensionItem } from "./extension-runtime.ts";
+import type { ExtensionKind } from "./extension-settings.ts";
 
 // 입력창에서 선택할 수 있는 명령의 이름과 사용법이다.
 export const TUI_COMMANDS = [
@@ -13,6 +15,11 @@ export const TUI_COMMANDS = [
   { name: "/resume", usage: "/resume [session-id]", description: "목록에서 고르거나 ID로 세션을 엽니다." },
   { name: "/compact", usage: "/compact", description: "현재 대화를 요약해 컨텍스트를 줄입니다." },
   { name: "/attach", usage: '/attach "/path/to/image.png"', description: "다음 메시지에 PNG 이미지를 첨부합니다." },
+  { name: "/skills", usage: "/skills", description: "스킬 목록을 보고 켜거나 끕니다." },
+  { name: "/tools", usage: "/tools", description: "발견한 툴을 개별적으로 켜거나 끕니다." },
+  { name: "/plugins", usage: "/plugins", description: "내장 기능 모듈을 묶어서 켜거나 끕니다." },
+  { name: "/mcp", usage: "/mcp", description: "MCP 서버 연결을 켜거나 끕니다." },
+  { name: "/reload-skills", usage: "/reload-skills", description: "전역·프로젝트 스킬 파일을 다시 읽습니다." },
   { name: "/quit", usage: "/quit", description: "작업과 연결을 정리하고 종료합니다." },
 ] as const;
 
@@ -34,6 +41,7 @@ export type TuiState = {
   status: string;
   closed: boolean;
   resumePicker?: Awaited<ReturnType<typeof readSessions>>;
+  extensionPicker?: { kind: ExtensionKind; items: ExtensionItem[]; error?: string };
 };
 // 이미 만들어진 코어와 저장·종료 함수를 TUI에 연결한다.
 export type TuiOptions = {
@@ -46,6 +54,7 @@ export type TuiOptions = {
   saveSession?: typeof persistSession;
   loadSession?: typeof restoreSession;
   listSessions?: typeof readSessions;
+  extensions?: ExtensionControls;
 };
 
 // 화면과 독립적으로 명령·세션·첨부 대기열을 관리해 테스트에서도 그대로 실행한다.
@@ -101,7 +110,15 @@ export function createTuiSession(options: TuiOptions) {
         if (!command) throw new Error("알 수 없는 명령입니다. /를 입력해 사용 가능한 명령을 확인하세요.");
         if (name !== "/attach" && name !== "/resume" && trimmed !== name) throw new Error(`사용법: ${command.usage}`);
         if (name === "/quit") { await close(); return; }
-        if (name === "/attach") {
+        if (["/skills", "/tools", "/plugins", "/mcp"].includes(name)) {
+          if (!options.extensions) throw new Error("확장 기능 관리가 연결되지 않았습니다.");
+          const kind = name.slice(1) as ExtensionKind;
+          update({ resumePicker: undefined, extensionPicker: { kind, items: options.extensions.list(kind) } });
+        } else if (name === "/reload-skills") {
+          if (!options.extensions) throw new Error("확장 기능 관리가 연결되지 않았습니다.");
+          await options.extensions.reloadSkills();
+          append("notice", "스킬 목록을 다시 읽었습니다. 기존 대화에 읽힌 본문은 유지됩니다.");
+        } else if (name === "/attach") {
           if (!supportsImages) throw new Error("현재 모델 연결은 이미지 입력이 비활성화되어 있습니다.");
           const image = await loadImage(attachmentPath(trimmed));
           checkImageInput([...session.messages, { role: "user", content: [...images, image] }], true);
@@ -112,13 +129,13 @@ export function createTuiSession(options: TuiOptions) {
           const id = trimmed.slice(name.length).trim();
           if (name === "/resume" && !id) {
             const resumePicker = await listSessions(paths);
-            if (!state.closed) update({ resumePicker });
+            if (!state.closed) update({ resumePicker, extensionPicker: undefined });
             return;
           }
           session = name === "/new" ? createSession(paths.workspaceDirectory) : await loadSession(id, paths);
           images = [];
           failedTurn = false;
-          update({ sessionId: session.id, pendingImages: 0, resumePicker: undefined, entries: session.messages.flatMap((message): TuiEntry[] => {
+          update({ sessionId: session.id, pendingImages: 0, resumePicker: undefined, extensionPicker: undefined, entries: session.messages.flatMap((message): TuiEntry[] => {
             const text = textOf(message);
             return text && message.role !== "tool" ? [{ kind: message.role === "user" ? "user" : "assistant", text }] : [];
           }) });
@@ -148,6 +165,21 @@ export function createTuiSession(options: TuiOptions) {
       if (!state.closed) update({ busy: false, status: failedTurn ? "실행 실패 · /new 또는 /resume" : "대기 중" });
     }
   }
+  // 에이전트가 실행 중일 때는 토글을 거부하고 저장·연결 중에도 중복 입력을 막는다.
+  async function toggleExtension(name: string) {
+    const picker = state.extensionPicker;
+    if (state.busy || state.closed || !picker || !options.extensions) return;
+    update({ busy: true, status: "확장 설정 반영 중" });
+    let error: string | undefined;
+    try {
+      await options.extensions.toggle(picker.kind, name);
+      await history.append({ sessionId: session.id }, { type: "command", input: `/${picker.kind} toggle ${name}` });
+    } catch (failure) { error = failure instanceof Error ? failure.message : String(failure); }
+    finally {
+      if (!state.closed) update({ busy: false, status: "대기 중",
+        extensionPicker: { kind: picker.kind, items: options.extensions.list(picker.kind), error } });
+    }
+  }
   // quit·Ctrl+C·화면 종료가 겹쳐도 소유 자원과 기록을 한 번만 정리한다.
   function close(reason = "runtime-exit") {
     closePromise ??= Promise.resolve().then(async () => {
@@ -160,7 +192,9 @@ export function createTuiSession(options: TuiOptions) {
     return closePromise;
   }
   return {
-    start, submit, close, onEvent,
+    start, submit, close, onEvent, toggleExtension,
+    // 확장 목록을 닫아도 변경한 프로젝트 설정은 유지한다.
+    dismissExtensionPicker() { if (!state.busy) update({ extensionPicker: undefined }); },
     // 선택 취소는 현재 세션과 첨부를 바꾸지 않고 목록만 닫는다.
     dismissResumePicker() { update({ resumePicker: undefined }); },
     // 마지막 불변 스냅샷을 반환해 화면의 불필요한 재렌더링을 피한다.

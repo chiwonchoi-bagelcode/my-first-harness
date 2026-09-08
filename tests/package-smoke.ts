@@ -69,7 +69,7 @@ async function main() {
     try {
       await until(() => output.endsWith("> "));
       for (const name of ["filesystem", "memory", "playwright"]) {
-        assert.ok(output.includes(`[mcp] ${name} (stdio):`), `설치된 ${name} 서버 연결 누락\n${output}\n${errors}`);
+        assert.match(output, new RegExp(`\\[mcp\\] ${name} \\(stdio\\): 툴 [1-9]\\d*개 등록`), `설치된 ${name} 서버 연결 누락\n${output}\n${errors}`);
       }
       const id = /session: ([\w-]+)/.exec(output)![1];
       const session = JSON.parse(await readFile(join(paths.sessionDirectory, `${id}.json`), "utf8"));

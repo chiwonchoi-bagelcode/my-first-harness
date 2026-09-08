@@ -19,6 +19,8 @@ import type { Session } from "../session.ts";
 import { JobManager } from "../job-manager.ts";
 import { listSessions, saveSession } from "../session-store.ts";
 import { createSession } from "../session.ts";
+import type { ExtensionControls, ExtensionItem } from "../extension-runtime.ts";
+import type { ExtensionKind } from "../extension-settings.ts";
 
 // 사용자 파일과 네트워크를 건드리지 않는 실제 TUI 제어 객체를 만든다.
 function fixture(overrides: Partial<TuiOptions> = {}) {
@@ -55,9 +57,82 @@ function fixture(overrides: Partial<TuiOptions> = {}) {
 // React 상태 반영과 Ink 프레임 출력이 끝날 때까지 기다린다.
 async function settle() { await new Promise((resolve) => setTimeout(resolve, 60)); }
 
+// TUI 입력이 실제 관리 API로 전달되는지 검사할 메모리 목록이다.
+function extensionFixture() {
+  const items: Record<ExtensionKind, ExtensionItem[]> = {
+    skills: [{ name: "sample", description: "스킬", enabled: true, active: true }],
+    tools: Array.from({ length: 30 }, (_, index) => ({ name: `tool-${index}`, description: "툴 설명", enabled: true, active: true })),
+    plugins: [{ name: "shell", description: "셸", enabled: true, active: true }],
+    mcp: [{ name: "memory", description: "stdio", enabled: true, active: true }],
+  };
+  const actions: string[] = [];
+  const extensions: ExtensionControls = {
+    // 화면 스냅샷과 설정 객체를 분리한다.
+    list(kind) { return structuredClone(items[kind]); },
+    // 선택한 항목만 바뀌는지 기록한다.
+    async toggle(kind, name) {
+      actions.push(`${kind}:${name}`);
+      const item = items[kind].find((entry) => entry.name === name)!;
+      item.enabled = !item.enabled;
+      item.active = item.enabled;
+    },
+    // 스킬 재탐색은 모델을 호출하지 않는다.
+    async reloadSkills() { actions.push("reload"); },
+  };
+  return { extensions, actions };
+}
+
+test("확장 목록은 방향키·Space·Enter로 토글하고 Esc로 닫으며 모델을 호출하지 않는다", async (t) => {
+  const { extensions, actions } = extensionFixture();
+  const { controller, calls } = fixture({ extensions });
+  const view = render(h(TuiScreen, { controller, model: "test", onQuit() {} }));
+  t.after(() => { view.unmount(); view.cleanup(); });
+  await controller.submit("/tools"); await settle();
+  assert.match(view.lastFrame()!, /\[on\] tool-0/);
+  view.stdin.write("\u001b[B"); await settle();
+  view.stdin.write(" "); await settle();
+  assert.match(view.lastFrame()!, /❯ \[off\] tool-1/);
+  view.stdin.write("\r"); await settle();
+  assert.match(view.lastFrame()!, /❯ \[on\] tool-1/);
+  for (let i = 0; i < 26; i++) { view.stdin.write("\u001b[B"); await settle(); }
+  assert.match(view.lastFrame()!, /tool-27/);
+  view.stdin.write("\u001b"); await settle();
+  assert.equal(controller.getSnapshot().extensionPicker, undefined);
+  await controller.submit("/plugins"); await settle();
+  assert.match(view.lastFrame()!, /끄면 실행 중인 셸 작업도 종료/);
+  controller.dismissExtensionPicker();
+  await controller.submit("/skills");
+  await controller.toggleExtension("sample");
+  controller.dismissExtensionPicker();
+  await controller.submit("/mcp");
+  await controller.toggleExtension("memory");
+  controller.dismissExtensionPicker();
+  await controller.submit("/reload-skills");
+  assert.deepEqual(actions, ["tools:tool-1", "tools:tool-1", "skills:sample", "mcp:memory", "reload"]);
+  assert.deepEqual(calls, []);
+});
+
+test("확장 변경 중 중복 토글과 모델 실행을 막고 연결 실패는 목록에 표시한다", async () => {
+  const { extensions } = extensionFixture();
+  const gate = Promise.withResolvers<void>();
+  let changes = 0;
+  extensions.toggle = async () => { changes++; await gate.promise; throw new Error("연결 실패"); };
+  const { controller, calls } = fixture({ extensions });
+  await controller.submit("/mcp");
+  const pending = controller.toggleExtension("memory");
+  await controller.toggleExtension("memory");
+  await controller.submit("중복 요청");
+  assert.equal(changes, 1);
+  gate.resolve();
+  await pending;
+  assert.equal(controller.getSnapshot().extensionPicker?.error, "연결 실패");
+  assert.equal(controller.getSnapshot().busy, false);
+  assert.deepEqual(calls, []);
+});
+
 test("명령 후보는 접두사·이미지 지원 여부에 맞고 인자 입력 중에는 닫힌다", () => {
-  assert.deepEqual(commandSuggestions("/", true).map((entry) => entry.name), ["/new", "/resume", "/compact", "/attach", "/quit"]);
-  assert.deepEqual(commandSuggestions("/r", true).map((entry) => entry.usage), ["/resume [session-id]"]);
+  assert.deepEqual(commandSuggestions("/", true).map((entry) => entry.name), ["/new", "/resume", "/compact", "/attach", "/skills", "/tools", "/plugins", "/mcp", "/reload-skills", "/quit"]);
+  assert.deepEqual(commandSuggestions("/r", true).map((entry) => entry.usage), ["/resume [session-id]", "/reload-skills"]);
   assert.equal(commandSuggestions("/", false).some((entry) => entry.name === "/attach"), false);
   for (const value of ["hello", "/unknown", "/attach ", "/resume abc"]) assert.deepEqual(commandSuggestions(value, true), []);
 });

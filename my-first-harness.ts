@@ -1,14 +1,9 @@
 #!/usr/bin/env node
 
-import { registerCounterFeature } from "./tools/counter.ts";
-import { registerTimeTools } from "./tools/time.ts";
-import { registerOtherLLMTools } from "./tools/other-llm.ts";
-import { registerFilesystemTools } from "./tools/filesystem.ts";
-import { registerShellTools } from "./tools/shell.ts";
-import { loadSkills } from "./skill-loader.ts";
+import { createBuiltinPlugins } from "./builtin-plugins.ts";
+import { createExtensionRuntime } from "./extension-runtime.ts";
 import { SkillManager } from "./skill-manager.ts";
 import { createHarnessPaths } from "./harness-paths.ts";
-import { connectMcpServers, closeMcpServers } from "./mcp-client.ts";
 import { createMcpServerConfigs } from "./mcp-servers.ts";
 import { createModelAdapter } from "./model-config.ts";
 import { ExecutionHistory } from "./execution-history.ts";
@@ -31,26 +26,27 @@ const tui = process.argv.includes("--tui") ? (await import("./tui.ts")).createTu
 
 const toolManager = new ToolManager();
 const skillManager = new SkillManager();
+const mcpServers = await createMcpServerConfigs(paths);
 
-registerCounterFeature(toolManager);
-registerTimeTools(toolManager);
-registerOtherLLMTools(toolManager, adapter);
-registerFilesystemTools(toolManager, adapter.supportsImages);
-const shellJobs = registerShellTools(toolManager, paths.workspaceDirectory);
-await loadSkills(skillManager, paths);
-const mcpClients = await connectMcpServers(toolManager, await createMcpServerConfigs(paths));
+const extensions = await createExtensionRuntime({
+  paths, toolManager, skillManager,
+  plugins: createBuiltinPlugins(paths, adapter), servers: mcpServers,
+});
+for (const server of extensions.list("mcp")) {
+  const transport = mcpServers.find((config) => config.name === server.name)!.transport;
+  const count = toolManager.getCatalog().filter((tool) => tool.owner === `mcp:${server.name}` && tool.active).length;
+  console.log(`[mcp] ${server.name} (${transport}): ${server.error ? `연결 실패 — ${server.error}` : server.active ? `툴 ${count}개 등록` : "비활성화"}`);
+}
 
 const agent = createAgent({
   adapter, toolManager, skillManager, history, paths, onEvent: tui?.onEvent ?? renderCliEvent,
 });
 
 const interfaceOptions = {
-  agent, paths, history, supportsImages: adapter.supportsImages,
+  agent, paths, history, extensions, supportsImages: adapter.supportsImages,
   // CLI가 끝날 때 이 실행에서 생성한 셸 작업과 MCP 연결을 함께 정리한다.
   async dispose() {
-    const results = await Promise.allSettled([shellJobs.dispose(), closeMcpServers(mcpClients)]);
-    const failures = results.filter((result) => result.status === "rejected");
-    if (failures.length) throw new AggregateError(failures.map((result) => result.reason), "런타임 정리 실패");
+    await extensions.dispose();
   },
 };
 if (tui) await tui.run({ ...interfaceOptions, model: modelChoice });

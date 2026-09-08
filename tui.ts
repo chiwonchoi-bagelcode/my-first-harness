@@ -37,9 +37,16 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
   const [inputVersion, setInputVersion] = useState(0);
   const [scroll, setScroll] = useState(0);
   const [resumeSelected, setResumeSelected] = useState(0);
+  const [extensionSelected, setExtensionSelected] = useState(0);
   const picker = state.resumePicker;
-  const candidates = menuHidden || picker ? [] : commandSuggestions(input, supportsImages);
-  const choice = candidates[Math.min(selected, Math.max(0, candidates.length - 1))];
+  const extensionPicker = state.extensionPicker;
+  const allCandidates = menuHidden || picker || extensionPicker ? [] : commandSuggestions(input, supportsImages);
+  const selectedIndex = Math.min(selected, Math.max(0, allCandidates.length - 1));
+  // 명령이 늘어나도 작은 터미널에서 입력창이 화면 밖으로 밀리지 않게 한다.
+  const candidateCount = Math.max(1, Math.min(allCandidates.length, rows - 13));
+  const candidateStart = Math.max(0, selectedIndex - candidateCount + 1);
+  const candidates = allCandidates.slice(candidateStart, candidateStart + candidateCount);
+  const choice = allCandidates[selectedIndex];
   const menuRows = candidates.length ? candidates.length + 3 : 0;
   const inputWidth = Math.max(2, columns - 6);
   const inputRows = Math.min(5, Math.max(1, screenRows - menuRows - 10), layoutInput(input, inputWidth).lines.length);
@@ -47,6 +54,10 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
   const resumeIndex = Math.min(resumeSelected, Math.max(0, (picker?.sessions.length ?? 0) - 1));
   const resumeCount = Math.max(1, feedRows - 4);
   const resumeStart = Math.max(0, resumeIndex - resumeCount + 1);
+  const extensionIndex = Math.min(extensionSelected, Math.max(0, (extensionPicker?.items.length ?? 0) - 1));
+  const extensionCount = Math.max(1, feedRows - 5);
+  const extensionStart = Math.max(0, extensionIndex - extensionCount + 1);
+  const extension = extensionPicker?.items[extensionIndex];
   const lines = conversationLines(state.entries, Math.max(1, columns));
   const offset = Math.min(scroll, Math.max(0, lines.length - feedRows));
   const end = Math.max(0, lines.length - offset);
@@ -56,6 +67,8 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
   useEffect(() => { setScroll(0); }, [state.sessionId]);
   // 목록을 새로 열면 최신 저장 세션부터 선택한다.
   useEffect(() => { setResumeSelected(0); }, [picker]);
+  // 토글 후에는 선택을 유지하고 다른 종류의 목록을 열 때만 처음으로 돌아간다.
+  useEffect(() => { setExtensionSelected(0); }, [extensionPicker?.kind]);
   // 명령 선택은 실행하지 않고 입력창에 채우며 새 입력 커서를 끝으로 옮긴다.
   function complete() {
     if (!choice) return;
@@ -77,6 +90,14 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
   useInput((value, key) => {
     if (key.eventType === "release") return;
     if (key.ctrl && value === "c") { onQuit(); return; }
+    if (extensionPicker) {
+      if (state.busy) return;
+      if (key.escape) { controller.dismissExtensionPicker(); return; }
+      if (key.upArrow) setExtensionSelected(Math.max(0, extensionIndex - 1));
+      if (key.downArrow) setExtensionSelected(Math.min(extensionPicker.items.length - 1, extensionIndex + 1));
+      if ((value === " " || key.return) && extension) void controller.toggleExtension(extension.name);
+      return;
+    }
     if (picker) {
       if (state.busy) return;
       if (key.escape) { controller.dismissResumePicker(); return; }
@@ -91,8 +112,8 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
     if (key.pageDown) setScroll(Math.max(0, offset - feedRows));
     if (state.busy) return;
     if (key.escape) setMenuHidden(true);
-    if (choice && key.upArrow) setSelected((selected + candidates.length - 1) % candidates.length);
-    if (choice && key.downArrow) setSelected((selected + 1) % candidates.length);
+    if (choice && key.upArrow) setSelected((selectedIndex + allCandidates.length - 1) % allCandidates.length);
+    if (choice && key.downArrow) setSelected((selectedIndex + 1) % allCandidates.length);
     if (choice && key.tab) complete();
   });
 
@@ -103,7 +124,19 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
   return h(Box, { flexDirection: "column", width: columns, height: screenRows },
     h(Text, { bold: true, color: "cyan", wrap: "truncate-end" }, `My First Harness · ${model} · ${state.sessionId}`),
     h(Text, { dimColor: true }, "─".repeat(Math.max(1, columns))),
-    picker ? h(Box, { flexDirection: "column", height: feedRows, flexShrink: 0, overflow: "hidden" },
+    extensionPicker ? h(Box, { flexDirection: "column", height: feedRows, flexShrink: 0, overflow: "hidden" },
+      h(Text, { bold: true, color: "cyan", wrap: "truncate-end" }, `${extensionPicker.kind} · 프로젝트 설정 · 다음 요청부터 반영`),
+      ...(extensionPicker.items.length ? extensionPicker.items.slice(extensionStart, extensionStart + extensionCount).map((item, index) =>
+        h(Text, { key: item.name, color: extensionStart + index === extensionIndex ? "cyan" : undefined, wrap: "truncate-end" },
+          `${extensionStart + index === extensionIndex ? "❯" : " "} [${item.enabled ? "on" : "off"}] ${displayText(item.name)}${item.error ? " · 실패" : item.enabled && !item.active ? " · 소속 비활성/미연결" : ""}${item.owner ? ` · ${displayText(item.owner)}` : ""}`))
+        : [h(Text, { key: "empty", dimColor: true }, "항목 없음 · 툴 목록은 소속 플러그인/MCP를 켜서 발견합니다.")]),
+      h(Text, { wrap: "truncate-end" }, displayText(extension?.description ?? "")),
+      h(Text, { dimColor: true, wrap: "truncate-end" }, extensionPicker.kind === "skills" ? "기존에 읽힌 스킬 본문은 남습니다. /reload-skills로 파일 재탐색" : "↑↓ 선택 · Space/Enter 토글 · Esc 닫기 · 설정은 자동 저장"),
+      h(Text, { dimColor: true, wrap: "truncate-end" }, extensionPicker.kind === "skills" ? "↑↓ 선택 · Space/Enter 토글 · Esc 닫기"
+        : extensionPicker.kind === "plugins" && extension?.name === "shell" ? "주의: 끄면 실행 중인 셸 작업도 종료됩니다."
+        : "소속을 켜도 개별 툴의 off 설정은 유지됩니다."),
+      h(Text, { color: "red", wrap: "truncate-end" }, displayText(extensionPicker.error ?? extension?.error ?? "")))
+    : picker ? h(Box, { flexDirection: "column", height: feedRows, flexShrink: 0, overflow: "hidden" },
       h(Text, { bold: true, color: "cyan", wrap: "truncate-end" }, "세션 선택 · 현재 프로젝트 · 최신 저장 순"),
       ...(picker.sessions.length ? picker.sessions.slice(resumeStart, resumeStart + resumeCount).map((session, index) =>
         h(Text, { key: session.id, color: resumeStart + index === resumeIndex ? "cyan" : undefined, wrap: "truncate-end" },
@@ -124,11 +157,11 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
         bold: command === choice, wrap: "truncate-end" }, `${command === choice ? "❯" : " "} ${command.name}  ${command.description}`)),
       h(Text, { wrap: "truncate-end" }, `사용법: ${choice?.usage}`),
       h(Text, { dimColor: true, wrap: "truncate-end" }, "입력창에 채운 후 Enter를 다시 누르면 실행합니다.")) : null,
-    h(Box, { borderStyle: "round", borderColor: state.busy || picker ? "gray" : "cyan", height: inputRows + 2, flexShrink: 0, overflow: "hidden" },
+    h(Box, { borderStyle: "round", borderColor: state.busy || picker || extensionPicker ? "gray" : "cyan", height: inputRows + 2, flexShrink: 0, overflow: "hidden" },
       h(Text, { color: "cyan" }, "> "),
       h(TuiInput, { key: inputVersion, value: input, width: inputWidth, height: inputRows,
-        cursorStart: { x: 3, y: 3 + feedRows + menuRows }, focus: !state.busy && !picker, menuOpen: Boolean(choice),
-        placeholder: picker ? "목록에서 세션을 선택하세요." : state.busy ? "실행 중 · 새 요청은 완료 후 입력" : "메시지 또는 /명령",
+        cursorStart: { x: 3, y: 3 + feedRows + menuRows }, focus: !state.busy && !picker && !extensionPicker, menuOpen: Boolean(choice),
+        placeholder: extensionPicker ? "Space/Enter 토글 · Esc 닫기" : picker ? "목록에서 세션을 선택하세요." : state.busy ? "실행 중 · 새 요청은 완료 후 입력" : "메시지 또는 /명령",
         onChange(value) { setInput(value); setSelected(0); setMenuHidden(false); }, onSubmit: submit })),
     h(Text, { color: state.busy ? "yellow" : "green", wrap: "truncate-end" }, `상태: ${state.status}${state.pendingImages ? ` · 첨부 ${state.pendingImages}개` : ""}`),
     h(Text, { dimColor: true, wrap: "truncate-end" }, `${offset ? "이전 내용 · " : ""}Enter 전송 · Shift+Enter/Cmd+J 줄바꿈 (미지원 시 Ctrl+J) · / 명령 · Ctrl+C 종료`),
