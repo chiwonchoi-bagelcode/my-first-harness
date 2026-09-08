@@ -15,6 +15,8 @@ export function createModelAdapter(name: string, apiKey: string | undefined): LL
   if (name === "haiku") return createAnthropicMessagesAdapter({
     provider: "bagel-anthropic", baseURL: `${baseURL}/anthropic/v1`,
     model: "claude-haiku-4-5-20251001", apiKey, auth: "bearer", supportsImages: true,
+    // 코딩용 기본 출력 한도. Haiku 4.5의 64K 상한 안에서 요청별 재정의가 가능하다.
+    maxOutputTokens: 32_000,
   });
   throw new Error(`지원하지 않는 모델 선택입니다: ${name}. luna, haiku 또는 farm을 사용하세요.`);
 }

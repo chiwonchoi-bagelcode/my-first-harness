@@ -179,7 +179,7 @@ test("키 누락이나 변환할 수 없는 이전 호출 인자가 있으면 �
   assert.equal(mock.mock.callCount(), 0);
 });
 
-test("모델 선택은 Luna/Haiku별 주소·모델·인증을 바꾸고 오타는 거부한다", async (t) => {
+test("모델 선택은 Luna/Haiku별 주소·모델·인증·기본 출력 한도를 적용한다", async (t) => {
   const urls: string[] = [];
   t.mock.method(globalThis, "fetch", async (url: any, init: any) => {
     urls.push(url);
@@ -187,9 +187,11 @@ test("모델 선택은 Luna/Haiku별 주소·모델·인증을 바꾸고 오타�
     assert.equal(init.headers.Authorization, "Bearer test-token");
     if (url.endsWith("/responses")) {
       assert.equal(body.model, "gpt-5.6-luna");
+      assert.equal(body.max_output_tokens, undefined);
       return Response.json({ status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }] });
     }
     assert.equal(body.model, config.model);
+    assert.equal(body.max_tokens, 32_000);
     return reply();
   });
   await createModelAdapter("luna", "test-token").generate(empty);
@@ -197,4 +199,17 @@ test("모델 선택은 Luna/Haiku별 주소·모델·인증을 바꾸고 오타�
   assert.deepEqual(urls, ["https://aiproxy-api.backoffice.bagelgames.com/openai/v1/responses",
     "https://aiproxy-api.backoffice.bagelgames.com/anthropic/v1/messages"]);
   assert.throws(() => createModelAdapter("haik", "test-token"), /지원하지 않는 모델/);
+});
+
+test("Haiku 기본 한도보다 요청별 한도를 우선하며 다음 요청의 기본값은 유지한다", async (t) => {
+  const limits: number[] = [];
+  t.mock.method(globalThis, "fetch", async (_url: any, init: any) => {
+    limits.push(JSON.parse(init.body).max_tokens);
+    return reply();
+  });
+  const adapter = createModelAdapter("haiku", "test-token");
+  await adapter.generate({ ...empty, maxOutputTokens: 2048 });
+  await adapter.generate({ ...empty, maxOutputTokens: 64_000 });
+  await adapter.generate(empty);
+  assert.deepEqual(limits, [2048, 64_000, 32_000]);
 });

@@ -160,6 +160,11 @@ export function createAnthropicMessagesAdapter(config: Config): LLMAdapter {
         const error = isObject(result) && isObject(result.error) ? result.error.message : undefined;
         throw new Error(typeof error === "string" ? error : `LLM 요청 실패: HTTP ${response.status} (Anthropic 메시지 형식 확인 필요)`);
       }
+      // 잘린 tool_use의 인자·서명은 완전한 형식이 아닐 수 있다. 원본은 observer가 이미 기록했다.
+      if (result.stop_reason === "max_tokens") {
+        return { message: { role: "assistant", content: [] }, stopReason: "max-tokens",
+          ...usageOf("anthropic-messages", result) };
+      }
       const blocks = readContent(result.content);
       const message: AssistantMessage = { role: "assistant", content: contentOf(blocks) };
       message.replayState = {

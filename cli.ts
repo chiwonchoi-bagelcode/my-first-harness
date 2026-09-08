@@ -15,6 +15,7 @@ export function renderCliEvent(event: AgentEvent) {
     case "compaction-start": console.log("[context] 대화를 요약합니다..."); break;
     case "compaction-end": console.log(`[context] 압축 완료: ${event.beforeChars} → ${event.afterChars}자`); break;
     case "compaction-empty": console.log("[context] 요약할 대화가 없습니다."); break;
+    case "output-limit-recovery": console.log(`[recovery] 출력 한도 도달 · 작업을 나눠 다시 요청합니다 (${event.attempt}/${event.maxAttempts})`); break;
     case "tool-results-pruned": console.log(`[context] 툴 결과 ${event.count}개 정리: ${event.beforeChars} → ${event.afterChars}자`); break;
   }
 }
