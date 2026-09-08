@@ -1,8 +1,37 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import sharp from "sharp";
+import { access, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createHarnessPaths } from "../harness-paths.ts";
+import { createMcpServerConfigs } from "../mcp-servers.ts";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { discoverMcpTools, mcpResultText, mcpToolName, connectMcpServers, closeMcpServers } from "../mcp-client.ts";
+import { discoverMcpTools, mcpResultContent, mcpToolName, connectMcpServers, closeMcpServers } from "../mcp-client.ts";
+import { solidPng } from "./image-fixture.ts";
+import { MAX_IMAGE_BYTES, withImagePaths, summaryContent } from "../image-content.ts";
+import { ToolManager } from "../tool-manager.ts";
 import { validateToolArguments } from "../tool-schema.ts";
+
+test("Playwright는 설치된 CLI와 프로젝트 cwd·별도 프로필로 등록하고 이미지도 허용한다", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "harness-mcp-config-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const paths = createHarnessPaths(directory, join(directory, "home"));
+  const configs = await createMcpServerConfigs(paths);
+  assert.deepEqual(configs.map((config) => config.name), ["filesystem", "memory", "playwright", "microsoft", "cloudflare"]);
+  for (const config of configs) {
+    if (config.transport === "stdio") {
+      await access(config.args[0]);
+      assert.equal(config.cwd, paths.workspaceDirectory);
+    }
+  }
+  const playwright = configs.find((config) => config.name === "playwright")!;
+  assert.ok(playwright.transport === "stdio");
+  assert.equal(playwright.command, "node");
+  assert.match(playwright.args[0], /[/\\]cli\.js$/);
+  assert.deepEqual(playwright.args.slice(1), ["--isolated",
+    "--output-dir", join(paths.projectHarnessDirectory, "mcp-playwright")]);
+});
 
 test("서버별 이름을 구분하고 긴 이름/특수문자도 64자 안에서 구분한다", () => {
   assert.equal(mcpToolName("a", "add"), "mcp__a__add");
@@ -45,19 +74,78 @@ test("isError 툴 결과는 기존 ToolManager가 처리할 실행 오류로 전
   await assert.rejects(tool.execute({}), /접근 거부/);
 });
 
-test("텍스트/구조화 결과를 보존하되 이미지 base64를 모델 텍스트로 보내지 않는다", () => {
-  const text = mcpResultText({
+test("텍스트·리소스·이미지·구조화 결과의 순서를 보존하고 base64를 텍스트로 보내지 않는다", async () => {
+  const data = solidPng().toString("base64");
+  const content = await mcpResultContent({
     content: [
       { type: "text", text: "결과" },
       { type: "resource", resource: { uri: "file:///example", text: "원문" } },
-      { type: "image", data: "BASE64", mimeType: "image/png" },
+      { type: "image", data, mimeType: "image/png" },
+      { type: "text", text: "이미지 다음 설명" },
     ],
     structuredContent: { value: 5 },
   });
-  assert.match(text, /결과\n원문/);
-  assert.match(text, /표시할 수 없습니다/);
-  assert.match(text, /"value":5/);
-  assert.doesNotMatch(text, /BASE64/);
+  assert.ok(Array.isArray(content));
+  assert.deepEqual(content.map((block) => block.type), ["text", "text", "image", "text", "text"]);
+  assert.deepEqual(content[2], { type: "image", mediaType: "image/png", data, width: 128, height: 128 });
+  assert.deepEqual(withImagePaths(content), content, "없는 원본 파일 경로를 만들어내지 않는다.");
+  const texts = content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+  assert.match(texts, /결과\n원문/);
+  assert.match(texts, /"value":5/);
+  assert.ok(!texts.includes(data));
+  const summary = summaryContent([{ role: "tool", content: [{ type: "tool-result", toolCallId: "image", content }] }]);
+  assert.ok(summary.some((block) => block.type === "image"));
+  assert.doesNotMatch(summary.filter((block) => block.type === "text").map((block) => block.text).join("\n"), /undefined/);
+  assert.equal(await mcpResultContent({ content: [] }), "(빈 MCP 결과)");
+});
+
+test("MCP 이미지의 형식·base64·크기·치수 오류는 기존 ToolManager 오류 결과로 반환한다", async () => {
+  const tooWide = await sharp({ create: { width: 4097, height: 1, channels: 3, background: "red" } }).png().toBuffer();
+  for (const [data, mimeType, error] of [
+    [solidPng().toString("base64"), "image/jpeg", /MIME/],
+    ["invalid!", "image/png", /base64/],
+    [Buffer.from("not png").toString("base64"), "image/png", /PNG/],
+    ["A".repeat(4 * Math.ceil(MAX_IMAGE_BYTES / 3) + 4), "image/png", /4 MiB/],
+    [tooWide.toString("base64"), "image/png", /4096/],
+  ] as const) {
+    const client = {
+      listTools: async () => ({ tools: [{ name: "screen", inputSchema: { type: "object" } }] }),
+      callTool: async () => ({ content: [{ type: "image", data, mimeType }] }),
+    } as unknown as Client;
+    const manager = new ToolManager();
+    manager.register((await discoverMcpTools(client, "test"))[0]);
+    const result = await manager.execute("mcp__test__screen", "{}");
+    assert.equal(result.isError, true);
+    assert.match(String(result.content), error);
+  }
+});
+
+test("MCP의 JPEG·WebP도 원본 MIME·바이트와 결과 순서를 유지한다", async () => {
+  for (const format of ["jpeg", "webp"] as const) {
+    const bytes = await sharp(solidPng()).toFormat(format).toBuffer();
+    const data = bytes.toString("base64");
+    const content = await mcpResultContent({ content: [
+      { type: "text", text: "앞" }, { type: "image", mimeType: `image/${format}`, data },
+      { type: "text", text: "뒤" },
+    ] });
+    assert.deepEqual(content, [{ type: "text", text: "앞" },
+      { type: "image", mediaType: `image/${format}`, data, width: 128, height: 128 },
+      { type: "text", text: "뒤" }]);
+  }
+});
+
+test("MCP 이미지도 ToolManager를 통과하고 오류 응답의 base64는 오류 텍스트에 넣지 않는다", async () => {
+  let isError = false;
+  const data = solidPng().toString("base64");
+  const client = {
+    listTools: async () => ({ tools: [{ name: "screen", inputSchema: { type: "object" } }] }),
+    callTool: async () => ({ isError, content: [{ type: "text", text: "화면 결과" }, { type: "image", data, mimeType: "image/png" }] }),
+  } as unknown as Client;
+  const manager = new ToolManager();
+  manager.register((await discoverMcpTools(client, "test"))[0]);
+  assert.ok(Array.isArray((await manager.execute("mcp__test__screen", "{}")).content));
+  isError = true;
+  assert.deepEqual(await manager.execute("mcp__test__screen", "{}"), { content: "툴 실행 오류: 화면 결과", isError: true });
 });
 
 test("중복된 툴과 반복 cursor를 거부한다", async () => {

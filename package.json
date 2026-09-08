@@ -2,17 +2,30 @@
   "name": "my-first-harness",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "bin": {
+    "my-first-harness": "./dist/my-first-harness.js"
+  },
+  "files": [
+    "dist/*.js",
+    "dist/adapters/*.js",
+    "dist/tools/*.js"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
-    "build": "mkdir -p dist && cd dist && bun build --compile ../my-first-harness.ts --outfile my-first-harness",
+    "build": "tsc -p tsconfig.build.json",
     "tui": "node my-first-harness.ts --tui",
+    "prepack": "pnpm run build",
     "test": "node --test tests/*.test.ts",
     "test:mcp": "node tests/mcp-smoke.ts",
+    "test:playwright": "node tests/playwright-smoke.ts",
     "test:responses": "node tests/responses-smoke.ts",
     "test:farm": "node tests/farm-smoke.ts",
     "test:images": "node tests/images-smoke.ts",
     "test:anthropic": "node tests/anthropic-smoke.ts",
-    "test:history": "node tests/history-smoke.ts"
+    "test:history": "node tests/history-smoke.ts",
+    "test:package": "node tests/package-smoke.ts"
   },
   "keywords": [],
   "author": "",
@@ -30,6 +43,7 @@
     "@modelcontextprotocol/sdk": "1.30.0",
     "@modelcontextprotocol/server-filesystem": "^2026.8.31",
     "@modelcontextprotocol/server-memory": "^2026.8.31",
+    "@playwright/mcp": "0.0.80",
     "ajv": "^8.20.0",
     "dotenv": "^17.4.2",
     "ink": "7.1.1",
@@ -37,11 +51,13 @@
     "react-devtools-core": "^7.0.1",
     "string-width": "^8.2.2",
     "wrap-ansi": "^10.0.1",
+    "sharp": "0.35.4",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",
     "@types/react": "^19.2.18",
-    "ink-testing-library": "^4.0.0"
+    "ink-testing-library": "^4.0.0",
+    "typescript": "7.0.2"
   }
 }

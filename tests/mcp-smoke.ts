@@ -19,6 +19,8 @@ async function execute(name: string, args: Record<string, unknown>) {
   assert.ok(tool, `툴 등록 실패: ${name}`);
   assert.equal(validateToolArguments(tool.parameters, args), undefined);
   const result = await tool.execute(args);
+  assert.equal(typeof result, "string");
+  if (typeof result !== "string") throw new Error("이 테스트의 도구는 텍스트를 반환해야 합니다.");
   console.log(`[PASS] ${name}: ${result.slice(0, 180).replaceAll("\n", " ")}`);
   return result;
 }
@@ -38,7 +40,7 @@ try {
   assert.match(await readFile(join(paths.userHarnessDirectory, "mcp", "memory.jsonl"), "utf8"), /favorite color is blue/);
   assert.match(await execute("mcp__microsoft__microsoft_docs_search", { query: "What is TypeScript?" }), /https:\/\/learn.microsoft.com/);
   assert.match(await execute("mcp__cloudflare__search_cloudflare_documentation", { query: "What are Cloudflare Workers?" }), /[Ww]orkers/);
-  console.log(`실 서버 4개, 등록 툴 ${tools.length}개: 연결·인자 검증·실행·결과 수신 확인`);
+  console.log(`실 서버 ${clients.length}개, 등록 툴 ${tools.length}개: 연결 확인 (브라우저 조작은 test:playwright로 별도 검증)`);
 } finally {
   await closeMcpServers(clients);
   // 이 테스트가 mkdtemp로 만든 디렉터리만 제거한다. 사용자 파일/메모리는 건드리지 않는다.

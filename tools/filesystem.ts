@@ -39,8 +39,8 @@ async function editTextFile(path: string, oldText: string, newText: string) {
 export function registerFilesystemTools(toolManager: any, supportsImages = false) {
   if (supportsImages) toolManager.register({
     name: "readImage",
-    description: "PNG 이미지를 직접 보고 판단할 수 있도록 읽는다. 스크린샷도 가능하다. 4 MiB 이하, 가로·세로 각각 4096px 이하만 지원한다.",
-    parameters: { type: "object", properties: { path: { type: "string", description: "읽을 PNG 이미지 경로" } }, required: ["path"] },
+    description: "PNG·JPEG·WebP 정지 이미지를 직접 보고 판단할 수 있도록 읽는다. 스크린샷도 가능하다. 4 MiB 이하, 가로·세로 각각 4096px 이하만 지원한다.",
+    parameters: { type: "object", properties: { path: { type: "string", description: "읽을 이미지 파일 경로" } }, required: ["path"] },
     // 이미지 자체를 반환한다. 별도의 LLM 분석 요청은 하지 않는다.
     execute: async ({ path }: { path: string }) => [await loadImage(path)],
   });

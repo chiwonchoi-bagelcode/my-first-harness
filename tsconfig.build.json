@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2023",
+    "rootDir": ".",
+    "outDir": "dist",
+    "noEmit": false,
+    "noEmitOnError": true,
+    "strict": true,
+    "rewriteRelativeImportExtensions": true
+  },
+  "files": ["my-first-harness.ts"],
+  "include": [],
+  "exclude": ["dist", "node_modules", "tests", "playground"]
+}
