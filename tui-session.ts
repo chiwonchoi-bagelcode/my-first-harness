@@ -85,6 +85,10 @@ export function createTuiSession(options: TuiOptions) {
       case "compaction-start": update({ status: "대화 요약 중" }); break;
       case "compaction-end": append("notice", `압축 완료: ${event.beforeChars} → ${event.afterChars}자`); break;
       case "compaction-empty": append("notice", "요약할 대화가 없습니다."); break;
+      case "output-limit-recovery":
+        append("notice", `출력 한도 도달 · 작업을 나눠 다시 요청합니다 (${event.attempt}/${event.maxAttempts})`);
+        update({ status: "출력 한도 복구 중" });
+        break;
       case "tool-results-pruned": append("notice", `툴 결과 ${event.count}개 정리: ${event.beforeChars} → ${event.afterChars}자`); break;
     }
   }

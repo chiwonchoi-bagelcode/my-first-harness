@@ -19,6 +19,7 @@ export type AgentEvent =
   | { type: "compaction-start" }
   | { type: "compaction-end"; beforeChars: number; afterChars: number }
   | { type: "compaction-empty" }
+  | { type: "output-limit-recovery"; attempt: number; maxAttempts: number }
   | { type: "tool-results-pruned"; count: number; beforeChars: number; afterChars: number };
 
 // 실행에 필요한 객체를 외부에서 받는다. 화면 알림은 동기 콜백이며 생략하면 출력하지 않는다.
@@ -77,8 +78,8 @@ export function createAgent(options: AgentOptions): Agent {
   }
 
   // 원문을 JSONL에 먼저 보존한 뒤 모델에게 보낼 대화에 추가한다.
-  async function rememberMessage(session: Session, message: Message, scope: HistoryScope) {
-    await history.append(scope, { type: "message", message });
+  async function rememberMessage(session: Session, message: Message, scope: HistoryScope, source?: "harness") {
+    await history.append(scope, { type: "message", message, ...(source ? { source } : {}) });
     recordMessage(session, message);
   }
 
@@ -98,7 +99,8 @@ export function createAgent(options: AgentOptions): Agent {
     }
     const context = assembleContext(session);
     const result = await recordLLM(adapter, history, scope, "step").generate(context);
-    await rememberMessage(session, result.message, scope);
+    // 잘린 응답은 model-response 원본 로그에만 남기고 재전송용 대화에는 넣지 않는다.
+    if (result.stopReason !== "max-tokens") await rememberMessage(session, result.message, scope);
 
     return result;
   }
@@ -112,10 +114,29 @@ export function createAgent(options: AgentOptions): Agent {
       content: [{ type: "text", text: input }, ...images],
     }, turnScope);
 
+    // 정상 스텝이 끼어도 초기화하지 않아 한 턴의 복구 요청 수를 제한한다.
+    let outputLimitRecoveries = 0;
+    const maxOutputLimitRecoveries = 2;
     try {
       for (let stepNumber = 1; ; stepNumber++) {
         const scope = { ...turnScope, step: stepNumber };
         const output = await step(session, scope);
+        if (output.stopReason === "max-tokens") {
+          if (outputLimitRecoveries >= maxOutputLimitRecoveries) {
+            throw new Error(`LLM 응답이 정상 완료되지 않았습니다: max-tokens (작업 분할 복구 ${maxOutputLimitRecoveries}회 소진)`);
+          }
+          outputLimitRecoveries++;
+          await rememberMessage(session, { role: "user", content: [{ type: "text", text:
+            `[하네스 실행 피드백 · 출력 한도 복구 ${outputLimitRecoveries}/${maxOutputLimitRecoveries}]\n` +
+            "직전 모델 응답이 출력 토큰 한도에 도달해 잘렸습니다. 그 응답의 툴 호출은 하나도 실행되지 않았습니다.\n" +
+            "이전 스텝에서 완료한 작업과 툴 결과는 그대로 유효합니다. 이미 성공한 작업을 반복하지 마세요.\n" +
+            "한 번에 생성할 내용을 줄여 원래 요청을 계속 수행하세요. 파일이나 작업을 나누거나, 지원되는 부분 편집 도구로 작은 범위를 수정하세요.\n" +
+            "파일 전체 덮어쓰기 도구에 일부 내용만 보내 기존 내용을 지우지 마세요. 설명도 간결하게 작성하세요.\n" +
+            "이 메시지는 실제 사용자의 새 요청이 아니라 하네스가 제공하는 실행 피드백입니다."
+          }] }, scope, "harness");
+          onEvent?.({ type: "output-limit-recovery", attempt: outputLimitRecoveries, maxAttempts: maxOutputLimitRecoveries });
+          continue;
+        }
         if (output.stopReason === "stop") {
           await history.append(scope, { type: "turn-end", outcome: "completed" });
           return textOf(output.message);

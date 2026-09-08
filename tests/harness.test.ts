@@ -446,6 +446,80 @@ test("Anthropic max_tokens 응답에 있는 툴도 실행하지 않고 세션을
   assert.equal(runtime.saved.length, 1);
 });
 
+test("출력 한도 피드백으로 작은 작업을 재요청하고 잘린 인자·replay 없이 성공한 결과만 이어간다", async (t) => {
+  const bodies: any[] = [];
+  t.mock.method(globalThis, "fetch", async (_url: any, init: any) => {
+    bodies.push(JSON.parse(init.body));
+    const step = bodies.length;
+    return Response.json({ type: "message", role: "assistant",
+      stop_reason: step === 2 ? "max_tokens" : step === 4 ? "end_turn" : "tool_use",
+      usage: { input_tokens: 10, output_tokens: 5 },
+      content: step === 2 ? [
+        { type: "text", text: "미완성 답변" },
+        { type: "tool_use", id: "broken", name: "increase", input: "{잘린 인자" },
+      ] : step === 4 ? [{ type: "text", text: "완료" }]
+        : [{ type: "tool_use", id: `ok-${step}`, name: "increase", input: {} }],
+    });
+  });
+  const runtime = harness(createAnthropicMessagesAdapter({
+    provider: "test", model: "claude-haiku-4-5-20251001", baseURL: "https://example.invalid/v1", apiKey: "test", maxOutputTokens: 32_000,
+  }));
+  let count = 0;
+  runtime.toolManager.register({ name: "increase", parameters: {}, execute: () => ++count });
+  const session = runtime.createSession();
+  assert.equal(await runtime.turn(session, "두 번 증가"), "완료");
+  assert.equal(count, 2);
+  assert.equal(bodies.length, 4);
+  assert.ok(bodies.every((body) => body.max_tokens === 32_000));
+  assert.match(JSON.stringify(bodies[2].messages), /하네스 실행 피드백/);
+  assert.match(JSON.stringify(bodies[2].messages), /이미 성공한 작업을 반복하지/);
+  assert.match(JSON.stringify(bodies[2].messages), /ok-1/);
+  assert.doesNotMatch(JSON.stringify(bodies[2].messages), /broken|미완성 답변|잘린 인자/);
+  assert.doesNotMatch(JSON.stringify(session.messages), /broken|미완성 답변/);
+  const raw = runtime.records.filter((event) => event.type === "model-response");
+  assert.equal(raw.length, 4);
+  assert.match(JSON.stringify(raw[1].response.body), /broken|잘린 인자/);
+  assert.equal(raw.reduce((sum, event) => sum + (event.response.usage?.outputTokens ?? 0), 0), 20);
+  assert.equal(runtime.records.filter((event) => event.type === "message" && event.source === "harness").length, 1);
+  assert.equal(runtime.events.filter((event) => event.type === "output-limit-recovery").length, 1);
+  assert.deepEqual(session.messages, recordedMessages(runtime));
+  assert.equal(runtime.records.at(-1)?.type, "turn-end");
+});
+
+test("텍스트만 잘려도 복구는 턴당 2회이며 실패 응답 없이 저장하고 다음 턴은 새 한도를 갖는다", async () => {
+  let calls = 0;
+  const runtime = harness({ async generate() {
+    calls++;
+    return { stopReason: "max-tokens", message: { role: "assistant", content: [{ type: "text", text: "잘린 원문" }] } };
+  } });
+  const session = runtime.createSession();
+  await assert.rejects(runtime.turn(session, "시작"), /복구 2회 소진/);
+  assert.equal(calls, 3);
+  assert.equal(runtime.events.filter((event) => event.type === "output-limit-recovery").length, 2);
+  assert.equal(session.messages.filter((message) => message.role === "assistant").length, 0);
+  assert.deepEqual(runtime.saved[0].messages, session.messages);
+  assert.equal(runtime.records.filter((event) => event.type === "turn-end" && event.outcome === "error").length, 1);
+  await assert.rejects(runtime.turn(session, "다시"), /복구 2회 소진/);
+  assert.equal(calls, 6);
+});
+
+test("성공한 툴 스텝이 사이에 있어도 한 턴의 출력 한도 복구 횟수는 초기화하지 않는다", async () => {
+  let calls = 0;
+  let executed = 0;
+  const runtime = harness({ async generate() {
+    calls++;
+    return { stopReason: calls % 2 ? "max-tokens" : "tool-calls", message: { role: "assistant", content: [
+      { type: "tool-call", id: `call-${calls}`, name: "probe", arguments: "{}" },
+    ] } };
+  } });
+  runtime.toolManager.register({ name: "probe", parameters: {}, execute: () => ++executed });
+  const session = runtime.createSession();
+  await assert.rejects(runtime.turn(session, "작업"), /복구 2회 소진/);
+  assert.equal(calls, 5);
+  assert.equal(executed, 2);
+  assert.doesNotMatch(JSON.stringify(session.messages), /call-1|call-3|call-5/);
+});
+
 test("다른 LLM 툴의 내부 호출도 현재 세션·툴 ID에 귀속되고 요청용 messages에 로그가 섞이지 않는다", async (t) => {
   let calls = 0;
   t.mock.method(globalThis, "fetch", async (_url: any, init: any) => {

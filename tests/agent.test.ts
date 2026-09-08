@@ -131,10 +131,12 @@ test("CLI는 모든 코어 이벤트를 기존 화면 문구로 표시한다", (
     { type: "compaction-start" },
     { type: "compaction-end", beforeChars: 70000, afterChars: 1000 },
     { type: "compaction-empty" },
+    { type: "output-limit-recovery", attempt: 1, maxAttempts: 2 },
     { type: "tool-results-pruned", count: 2, beforeChars: 80000, afterChars: 5000 },
   ];
   events.forEach(renderCliEvent);
   assert.deepEqual(lines, ["확인 중", "[tool] read {}", "[context] 대화를 요약합니다...",
     "[context] 압축 완료: 70000 → 1000자", "[context] 요약할 대화가 없습니다.",
+    "[recovery] 출력 한도 도달 · 작업을 나눠 다시 요청합니다 (1/2)",
     "[context] 툴 결과 2개 정리: 80000 → 5000자"]);
 });

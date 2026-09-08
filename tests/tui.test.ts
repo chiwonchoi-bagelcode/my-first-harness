@@ -113,6 +113,10 @@ test("한글 입력과 진행 출력이 보이며 실행 중에는 요청을 중
   view.stdin.write("another\r"); await settle();
   await controller.submit("겹치는 요청");
   assert.equal(invoked, 1);
+  controller.onEvent({ type: "output-limit-recovery", attempt: 1, maxAttempts: 2 });
+  await settle();
+  assert.match(view.lastFrame()!, /작업을 나눠 다시 요청합니다/);
+  assert.match(view.lastFrame()!, /출력 한도 복구 중/);
   pending.resolve("확인 완료"); await settle();
   assert.match(view.lastFrame()!, /확인 완료/);
   assert.match(view.lastFrame()!, /상태: 대기 중/);
