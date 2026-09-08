@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { stripTypeScriptTypes } from "node:module";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -14,6 +16,7 @@ import * as context from "../context-manager.ts";
 import { createHarnessPaths } from "../harness-paths.ts";
 import { summarize } from "../llm.ts";
 import { registerShellTools } from "../tools/shell.ts";
+import { registerFilesystemTools } from "../tools/filesystem.ts";
 import { recordLLM } from "../recorded-llm.ts";
 import { registerOtherLLMTools } from "../tools/other-llm.ts";
 import type { HistoryEvent, HistoryScope } from "../execution-history.ts";
@@ -114,6 +117,40 @@ test("실제 turn이 background 작업 ID를 기록하고 다음 step의 조회 
   assert.deepEqual(ends.map((event) => event.toolCallId), ["start", "read"]);
   assert.equal(JSON.parse(ends[0].result.content).jobId, jobId!);
   assert.equal(JSON.parse(ends[1].result.content).status, "completed");
+});
+
+test("부분 수정의 중복 오류를 모델에 돌려주고 구체화한 다음 호출로 복구한다", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "harness-edit-turn-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "game.ts");
+  const original = "user: hello\nadmin: hello\n";
+  await writeFile(path, original, "utf8");
+  let steps = 0;
+  const runtime = harness({
+    // 모델 출력만 고정하고 실제 파일 수정·오류 전달·후속 호출을 검증한다.
+    async generate(request) {
+      steps++;
+      const results = request.messages.filter((message) => message.role === "tool").flatMap((message) => message.content);
+      if (steps === 2) {
+        assert.equal(results[0].isError, true);
+        assert.match(results[0].content, /여러 곳에 일치/);
+        assert.equal(await readFile(path, "utf8"), original);
+      }
+      if (steps <= 2) return { stopReason: "tool-calls", message: { role: "assistant", content: [{
+        type: "tool-call", id: `edit-${steps}`, name: "editTextFile",
+        arguments: JSON.stringify({ path, oldText: steps === 1 ? "hello" : "admin: hello", newText: "admin: 안녕" }),
+      }] } };
+      assert.equal(steps, 3);
+      assert.equal(results[1].toolCallId, "edit-2");
+      assert.equal(results[1].isError, undefined);
+      assert.equal(await readFile(path, "utf8"), "user: hello\nadmin: 안녕\n");
+      return { stopReason: "stop", message: { role: "assistant", content: [{ type: "text", text: "수정 완료" }] } };
+    },
+  });
+  registerFilesystemTools(runtime.toolManager);
+  assert.equal(await runtime.turn(runtime.createSession(), "admin 인사만 바꿔줘"), "수정 완료");
+  const ends = runtime.records.filter((event) => event.type === "tool-end");
+  assert.deepEqual(ends.map((event) => !!event.result.isError), [true, false]);
 });
 
 test("실제 step/turn이 공통 형식으로 복수 툴을 실행하고 다음 API 요청에 모든 결과를 넣는다", async (t) => {
