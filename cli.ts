@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { createSession } from "./session.ts";
+import { readProjectInstructions } from "./project-instructions.ts";
 import { loadSession as restoreSession, saveSession as persistSession } from "./session-store.ts";
 import { attachmentPath, checkImageInput, loadImage } from "./image-content.ts";
 import type { Agent, AgentEvent } from "./agent.ts";
@@ -81,7 +82,7 @@ export async function runCli(options: CliOptions) {
         try {
           if (!supportsImages) throw new Error("현재 모델 연결은 이미지 입력이 비활성화되어 있습니다.");
           const image = await loadImage(attachmentPath(input));
-          checkImageInput([...session.messages, { role: "user", content: [...pendingImages, image] }], true);
+          checkImageInput([{ role: "user", content: [...pendingImages, image] }], true, false);
           pendingImages.push(image);
           console.log(`[attach] ${image.path} (${image.width}×${image.height}) — 다음 메시지에 첨부합니다.`);
         } catch (error) {
@@ -113,6 +114,14 @@ export async function runCli(options: CliOptions) {
 
       if (input.trim() === "/compact") {
         await agent.compact(session);
+        continue;
+      }
+
+      if (input.trim() === "/reload-instructions") {
+        session.projectInstructions = readProjectInstructions(paths.workspaceDirectory);
+        await history.append({ sessionId: session.id }, { type: "instructions-reloaded", projectInstructions: session.projectInstructions });
+        await saveSession(session, paths);
+        console.log("[instructions] AGENTS.md를 다시 읽었습니다. 파일이 없으면 프로젝트 지침은 비워집니다.");
         continue;
       }
 

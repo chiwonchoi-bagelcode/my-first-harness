@@ -9,6 +9,11 @@ export type ImageBlock = {
   data: string;
   // 파일에서 읽은 경우만 경로가 있다. MCP 인라인 이미지는 경로가 없을 수 있다.
   path?: string;
+  // 당시 바이트를 보관한 경로와 표시 이름이며 원래 파일의 변경과 독립적이다.
+  storedPath?: string;
+  name?: string;
+  // 요청용 축소본에서만 사용하며 좌표 변환의 기준이 되는 원본 크기다.
+  originalDimensions?: { width: number; height: number };
   width: number;
   height: number;
 };

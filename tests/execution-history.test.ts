@@ -54,7 +54,7 @@ test("JSONL은 호출 시점의 값을 순서대로 추가하고 알려진 인�
 
 test("압축·축약 원문은 JSONL에 남고 resume는 JSON 스냅샷만 읽는다", async (t) => {
   const f = await fixture(t);
-  const session: Session = { id: f.scope.sessionId, workspaceDirectory: f.paths.workspaceDirectory, system: "지침", messages: [] };
+  const session: Session = { id: f.scope.sessionId, workspaceDirectory: f.paths.workspaceDirectory, system: "지침", projectInstructions: "", discoveredTools: [], messages: [] };
   const original: Message = { role: "tool", content: [{ type: "tool-result", toolCallId: "a", content: "원문".repeat(20_000) }] };
   await f.history.append(f.scope, { type: "message", message: original });
   recordMessage(session, original);

@@ -44,10 +44,10 @@ test("PNG를 읽고 파일 형식·크기·치수·경로 오류를 거절한다
   await writeFile(path, "not a png");
   await assert.rejects(loadImage(path), /PNG/);
   await writeFile(path, Buffer.alloc(MAX_IMAGE_BYTES + 1));
-  await assert.rejects(loadImage(path), /4 MiB/);
-  const large = await sharp({ create: { width: 4097, height: 1, channels: 3, background: "red" } }).png().toBuffer();
+  await assert.rejects(loadImage(path), /20 MiB/);
+  const large = await sharp({ create: { width: 8193, height: 1, channels: 3, background: "red" } }).png().toBuffer();
   await writeFile(path, large);
-  await assert.rejects(loadImage(path), /4096/);
+  await assert.rejects(loadImage(path), /8192/);
   assert.equal(attachmentPath('/attach "/some dir/a.png"'), "/some dir/a.png");
   assert.equal(attachmentPath("/attach /some dir/a.png"), "/some dir/a.png");
   assert.throws(() => attachmentPath("/attach"), /사용법/);
@@ -176,8 +176,8 @@ test("미지원 연결은 첨부와 툴 이미지 모두 네트워크 요청 전
     }
   }
   assert.throws(() => checkImageInput([{ role: "user", content: [
-    { ...image, data: "A".repeat(12 * 1024 * 1024) },
-  ] }], true), /8 MiB/);
+    { ...image, data: "A".repeat(21 * 1024 * 1024) },
+  ] }], true), /20 MiB/);
 });
 
 test("JPEG·WebP도 JSON 왕복 후 Responses·Anthropic의 첨부와 툴 결과에 전달한다", async (t) => {

@@ -3,6 +3,7 @@ import { summarize } from "./llm.ts";
 import { recordLLM } from "./recorded-llm.ts";
 import { textOf } from "./llm-types.ts";
 import { checkImageInput } from "./image-content.ts";
+import { archiveImages, projectRequestImages } from "./image-request.ts";
 import { saveSession as persistSession } from "./session-store.ts";
 import { compactSession, contextSize, pruneToolResults, recordMessage, shouldCompact } from "./context-manager.ts";
 import { DEFAULT_CONTEXT_BUDGET, compactionThreshold, estimateRequestTokens, retentionTokens } from "./token-budget.ts";
@@ -49,15 +50,20 @@ export function createAgent(options: AgentOptions): Agent {
   compactionThreshold(budget);
 
   // 시스템 지침·스킬·작업 폴더와 현재 대화·툴 정의를 공통 요청으로 조립한다.
-  function assembleContext(session: Session): LLMRequest {
+  async function assembleContext(session: Session): Promise<LLMRequest> {
     return {
       system: [
         session.system,
         ...skillManager.getInstructions(),
+        toolManager.getSearchInstructions(),
         `현재 작업 디렉토리: ${paths.workspaceDirectory}`,
       ].join("\n\n"),
-      messages: session.messages,
-      tools: toolManager.getDefinitions(),
+      messages: [
+        ...(session.projectInstructions ? [{ role: "user" as const, content: [{ type: "text" as const,
+          text: `[프로젝트 지침 · AGENTS.md]\n${session.projectInstructions}` }] }] : []),
+        ...await projectRequestImages(session.messages, { protectRecent: true }),
+      ],
+      tools: toolManager.getModelDefinitions(session.discoveredTools),
     };
   }
 
@@ -82,6 +88,7 @@ export function createAgent(options: AgentOptions): Agent {
 
   // 원문을 JSONL에 먼저 보존한 뒤 모델에게 보낼 대화에 추가한다.
   async function rememberMessage(session: Session, message: Message, scope: HistoryScope, source?: "harness") {
+    [message] = await archiveImages([message], paths.sessionDirectory);
     await history.append(scope, { type: "message", message, ...(source ? { source } : {}) });
     recordMessage(session, message);
   }
@@ -89,7 +96,7 @@ export function createAgent(options: AgentOptions): Agent {
   // 필요하면 컨텍스트를 줄이고 모델을 한 번 호출해 응답을 기록한다.
   async function step(session: Session, scope: HistoryScope) {
     // turn()이 이전 step의 모든 툴 결과를 기록한 뒤 여기로 돌아온다.
-    if (shouldCompact(assembleContext(session), budget)) {
+    if (shouldCompact(await assembleContext(session), budget)) {
       const before = contextSize(session);
       const pruned = pruneToolResults(session);
       if (pruned > 0) {
@@ -98,14 +105,14 @@ export function createAgent(options: AgentOptions): Agent {
         await saveSession(session, paths);
         onEvent?.({ type: "tool-results-pruned", count: pruned, beforeChars: before, afterChars: contextSize(session) });
       }
-      if (shouldCompact(assembleContext(session), budget)) await compactAndSave(session, scope);
+      if (shouldCompact(await assembleContext(session), budget)) await compactAndSave(session, scope);
       // 고정 지침·툴 또는 보존할 최근 기록만으로 가득 찬 경우 요약을 반복하지 않는다.
-      const measured = assembleContext(session);
+      const measured = await assembleContext(session);
       if (shouldCompact(measured, budget)) {
         throw new Error(`컨텍스트가 압축 후에도 예산을 초과합니다 (추정 ${estimateRequestTokens(measured)} / ${compactionThreshold(budget)} 토큰). 툴·스킬 또는 입력 크기를 줄여주세요.`);
       }
     }
-    const context = assembleContext(session);
+    const context = await assembleContext(session);
     const result = await recordLLM(adapter, history, scope, "step").generate(context);
     // 잘린 응답은 model-response 원본 로그에만 남기고 재전송용 대화에는 넣지 않는다.
     if (result.stopReason !== "max-tokens") await rememberMessage(session, result.message, scope);
@@ -166,13 +173,14 @@ export function createAgent(options: AgentOptions): Agent {
           let toolResult = await toolManager.execute(
             toolCall.name,
             toolCall.arguments,
-            { llm: recordLLM(adapter, history, { ...scope, parentToolCallId: toolCall.id }, "other-llm") },
+            { llm: recordLLM(adapter, history, { ...scope, parentToolCallId: toolCall.id }, "other-llm"),
+              discoveredTools: session.discoveredTools },
           );
           if (Array.isArray(toolResult.content)) {
             try {
               checkImageInput([...session.messages, { role: "tool", content: [
                 { type: "tool-result", toolCallId: toolCall.id, ...toolResult },
-              ] }], adapter.supportsImages);
+              ] }], adapter.supportsImages, false);
             } catch (error) {
               toolResult = { content: error instanceof Error ? error.message : String(error), isError: true };
             }

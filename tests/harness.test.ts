@@ -24,7 +24,7 @@ import type { AgentEvent } from "../agent.ts";
 import { ToolManager } from "../tool-manager.ts";
 
 // 실제 코어를 import하고 모델·저장·화면 출력만 테스트용으로 연결한다.
-function harness(adapter: LLMAdapter) {
+function harness(adapter: LLMAdapter, paths = createHarnessPaths("/test", "/test-home")) {
   const events: AgentEvent[] = [];
   const saved: Session[] = [];
   const records: (HistoryEvent & HistoryScope)[] = [];
@@ -34,7 +34,6 @@ function harness(adapter: LLMAdapter) {
     // 테스트 기록은 즉시 저장되므로 대기할 쓰기가 없다.
     async flush() {},
   };
-  const paths = createHarnessPaths("/test", "/test-home");
   const toolManager = new ToolManager();
   const skillManager = new SkillManager();
   const agent = createAgent({
@@ -73,18 +72,21 @@ test("실제 turn은 첨부와 readImage 결과를 같은 루프에서 보내고
   const runtime = harness({ supportsImages: true,
     // 실제 툴과 기록 루프를 실행하고 모델의 요청·응답만 대체한다.
     async generate(request) {
-      assert.deepEqual(request.messages[0].content, [{ type: "text", text: "화면 확인" }, image]);
+      const attached = request.messages[0].content[1] as ImageBlock;
+      assert.equal(attached.data, image.data);
+      assert.ok(attached.storedPath?.startsWith(directory));
+      assert.deepEqual(await readFile(attached.storedPath!), solidPng());
       if (++steps === 1) return { stopReason: "tool-calls", message: { role: "assistant", content: [
         { type: "tool-call", id: "good", name: "readImage", arguments: JSON.stringify({ path }) },
         { type: "tool-call", id: "bad", name: "readImage", arguments: JSON.stringify({ path: join(directory, "missing.png") }) },
       ] } };
       const results = request.messages.filter((item) => item.role === "tool").flatMap((item) => item.content);
-      assert.deepEqual(results[0], { type: "tool-result", toolCallId: "good", content: [image] });
+      assert.deepEqual(results[0], { type: "tool-result", toolCallId: "good", content: [attached] });
       assert.equal(results[1].isError, true);
       assert.match(toolText(results[1].content), /ENOENT/);
       return { stopReason: "stop", message: { role: "assistant", content: [{ type: "text", text: "확인 완료" }] } };
     },
-  });
+  }, createHarnessPaths(directory, directory));
   registerFilesystemTools(runtime.toolManager, true);
   const session = runtime.createSession();
   assert.equal(await runtime.turn(session, "화면 확인", [image]), "확인 완료");

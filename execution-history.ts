@@ -10,6 +10,7 @@ export type HistoryScope = { sessionId: string; turnId?: string; step?: number; 
 export type CallPurpose = "step" | "compaction" | "other-llm";
 // 메시지 원문과 실행 과정을 저장하지만 상태 복원 명령으로 사용하지 않는 이벤트.
 export type HistoryEvent =
+  | { type: "instructions-reloaded"; projectInstructions: string }
   | { type: "message"; message: Message; source?: "harness" }
   | { type: "model-start"; callId: string; purpose: CallPurpose; request: LLMRequest }
   | { type: "model-request"; callId: string; request: WireRequest }

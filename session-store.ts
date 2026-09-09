@@ -39,8 +39,7 @@ export async function saveSession(session: Session, paths: HarnessPaths) {
 
   await writeFile(
     join(sessionDirectory, `${session.id}.json`),
-    JSON.stringify({ version: 2, id: session.id, workspaceDirectory: session.workspaceDirectory,
-      system: session.system, messages: session.messages }, null, 2),
+    JSON.stringify({ version: 3, ...session }, null, 2),
     "utf8",
   );
 }
@@ -51,10 +50,13 @@ export async function loadSession(id: string, paths: HarnessPaths): Promise<Sess
   const content = await readFile(join(paths.sessionDirectory, `${id}.json`), "utf8");
 
   const session = JSON.parse(content);
-  if (session.version !== 2 || session.id !== id || typeof session.system !== "string"
+  if (session.version !== 3 || session.id !== id || typeof session.system !== "string"
+    || typeof session.projectInstructions !== "string" || !Array.isArray(session.discoveredTools)
+    || !session.discoveredTools.every((name: unknown) => typeof name === "string")
     || typeof session.workspaceDirectory !== "string" || !Array.isArray(session.messages)) {
     throw new Error("현재 세션 형식이 아닙니다. 새 세션으로 시작해 주세요.");
   }
   return { id: session.id, workspaceDirectory: session.workspaceDirectory,
+    projectInstructions: session.projectInstructions, discoveredTools: session.discoveredTools,
     system: session.system, messages: session.messages };
 }

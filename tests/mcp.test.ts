@@ -100,13 +100,13 @@ test("텍스트·리소스·이미지·구조화 결과의 순서를 보존하�
 });
 
 test("MCP 이미지의 형식·base64·크기·치수 오류는 기존 ToolManager 오류 결과로 반환한다", async () => {
-  const tooWide = await sharp({ create: { width: 4097, height: 1, channels: 3, background: "red" } }).png().toBuffer();
+  const tooWide = await sharp({ create: { width: 8193, height: 1, channels: 3, background: "red" } }).png().toBuffer();
   for (const [data, mimeType, error] of [
     [solidPng().toString("base64"), "image/jpeg", /MIME/],
     ["invalid!", "image/png", /base64/],
     [Buffer.from("not png").toString("base64"), "image/png", /PNG/],
-    ["A".repeat(4 * Math.ceil(MAX_IMAGE_BYTES / 3) + 4), "image/png", /4 MiB/],
-    [tooWide.toString("base64"), "image/png", /4096/],
+    ["A".repeat(4 * Math.ceil(MAX_IMAGE_BYTES / 3) + 4), "image/png", /20 MiB/],
+    [tooWide.toString("base64"), "image/png", /8192/],
   ] as const) {
     const client = {
       listTools: async () => ({ tools: [{ name: "screen", inputSchema: { type: "object" } }] }),

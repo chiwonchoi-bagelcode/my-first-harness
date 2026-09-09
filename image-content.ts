@@ -6,8 +6,9 @@ import sharp from "sharp";
 import { withoutReplayState } from "./llm-types.ts";
 import type { ContentBlock, ImageBlock, Message, ToolContent } from "./llm-types.ts";
 
-export const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
-export const MAX_REQUEST_IMAGE_BYTES = 8 * 1024 * 1024;
+// 원본 입력 한도와 Base64 인코딩 후 요청 합계 한도는 서로 다른 기준이다.
+export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+export const MAX_REQUEST_IMAGE_BYTES = 20 * 1024 * 1024;
 
 // 일반 파일만 제한된 크기로 읽고 공통 이미지 검사에 전달한다.
 export async function loadImage(path: string): Promise<ImageBlock> {
@@ -17,7 +18,7 @@ export async function loadImage(path: string): Promise<ImageBlock> {
   try {
     const info = await file.stat();
     if (!info.isFile()) throw new Error("이미지는 일반 파일이어야 합니다.");
-    if (info.size > MAX_IMAGE_BYTES) throw new Error("이미지는 4 MiB 이하여야 합니다. 크기를 줄여 주세요.");
+    if (info.size > MAX_IMAGE_BYTES) throw new Error("원본 이미지는 20 MiB 이하여야 합니다.");
     // 파일이 읽는 동안 커져도 한도보다 많이 메모리에 올리지 않는다.
     const buffer = Buffer.alloc(MAX_IMAGE_BYTES + 1);
     let length = 0;
@@ -26,14 +27,14 @@ export async function loadImage(path: string): Promise<ImageBlock> {
       if (!bytesRead) break;
       length += bytesRead;
     }
-    if (length > MAX_IMAGE_BYTES) throw new Error("이미지는 4 MiB 이하여야 합니다.");
+    if (length > MAX_IMAGE_BYTES) throw new Error("원본 이미지는 20 MiB 이하여야 합니다.");
     return imageFromBytes(buffer.subarray(0, length), absolute);
   } finally { await file.close(); }
 }
 
 // sharp로 형식·치수·픽셀 손상을 검사하되 정상 이미지의 원본 바이트는 보존한다.
 export async function imageFromBytes(bytes: Buffer, path?: string): Promise<ImageBlock> {
-  if (bytes.length > MAX_IMAGE_BYTES) throw new Error("이미지는 4 MiB 이하여야 합니다.");
+  if (bytes.length > MAX_IMAGE_BYTES) throw new Error("원본 이미지는 20 MiB 이하여야 합니다.");
   const image = sharp(bytes, { failOn: "error", limitInputPixels: 4096 * 4096 });
   const metadata = await image.metadata().catch(() => {
     throw new Error("이미지를 읽을 수 없습니다. PNG·JPEG·WebP 형식과 파일 손상 여부를 확인해 주세요.");
@@ -47,8 +48,8 @@ export async function imageFromBytes(bytes: Buffer, path?: string): Promise<Imag
   const transposed = (metadata.orientation ?? 1) >= 5;
   const width = transposed ? metadata.height : metadata.width;
   const height = transposed ? metadata.width : metadata.height;
-  if (!width || !height || width > 4096 || height > 4096) {
-    throw new Error("이미지의 가로·세로는 각각 1~4096픽셀이어야 합니다. 크기를 줄여 주세요.");
+  if (!width || !height || width > 8192 || height > 8192) {
+    throw new Error("이미지의 가로·세로는 각각 1~8192픽셀이어야 합니다. 크기를 줄여 주세요.");
   }
   await image.raw().toBuffer().catch(() => {
     throw new Error("이미지 픽셀을 읽을 수 없습니다. 파일 손상 여부를 확인해 주세요.");
@@ -64,8 +65,12 @@ export function contentBlocks(content: ToolContent): ContentBlock[] {
 
 // 전송할 이미지 바로 앞에 출처를 붙인다. 저장된 메시지는 변경하지 않는다.
 export function withImagePaths(blocks: ContentBlock[]): ContentBlock[] {
-  return blocks.flatMap((block): ContentBlock[] => block.type === "image" && block.path ? [
-    { type: "text", text: `다음 이미지의 원본 파일 경로: ${JSON.stringify(block.path)}\n이미지를 읽은 시점의 경로이며, 현재 파일은 변경되거나 삭제되었을 수 있습니다.` },
+  return blocks.flatMap((block): ContentBlock[] => block.type === "image" && (block.path || block.storedPath || block.originalDimensions) ? [
+    { type: "text", text: [
+      ...(block.path ? [`다음 이미지의 원본 파일 경로: ${JSON.stringify(block.path)}\n이미지를 읽은 시점의 경로이며, 현재 파일은 변경되거나 삭제되었을 수 있습니다.`] : []),
+      ...(block.storedPath ? [`당시 원본 보관 경로: ${JSON.stringify(block.storedPath)} (읽기 전용 복사본)`] : []),
+      ...(block.originalDimensions ? [`원본 ${block.originalDimensions.width}×${block.originalDimensions.height}, 전송 이미지 ${block.width}×${block.height}. 좌표는 전송 이미지 기준이며 실제 화면 조작 시 변환이 필요합니다.`] : []),
+    ].join("\n") },
     block,
   ] : [block]);
 }
@@ -80,12 +85,12 @@ export function imagesOf(messages: Message[]): ImageBlock[] {
 }
 
 // 미지원 연결이나 과도한 이미지 요청을 전송 전에 명시적으로 거절한다.
-export function checkImageInput(messages: Message[], supported: boolean | undefined) {
+export function checkImageInput(messages: Message[], supported: boolean | undefined, checkBudget = true) {
   const images = imagesOf(messages);
   if (images.length && !supported) throw new Error("현재 모델 연결은 이미지 입력이 비활성화되어 있습니다.");
-  const bytes = images.reduce((sum, image) => sum + Buffer.byteLength(image.data, "base64"), 0);
-  if (bytes > MAX_REQUEST_IMAGE_BYTES) {
-    throw new Error("대화의 이미지 합계가 8 MiB를 넘었습니다. 이미지를 줄이거나 새 세션을 시작해 주세요.");
+  const bytes = images.reduce((sum, image) => sum + Buffer.byteLength(image.data), 0);
+  if (checkBudget && bytes > MAX_REQUEST_IMAGE_BYTES) {
+    throw new Error("전송 이미지의 Base64 합계가 20 MiB를 넘었습니다. 이번 입력의 이미지 수를 줄여 주세요.");
   }
 }
 
@@ -95,7 +100,8 @@ export function summaryContent(messages: Message[]): ContentBlock[] {
   const text = JSON.stringify(withoutReplayState(messages), (_key, value) => {
     if (value?.type !== "image") return value;
     images.push(value);
-    return { type: "image", imageNumber: images.length, path: value.path, width: value.width, height: value.height };
+    return { type: "image", imageNumber: images.length, path: value.path, storedPath: value.storedPath,
+      name: value.name, width: value.width, height: value.height };
   });
   return [{ type: "text", text }, ...images.flatMap((image, index): ContentBlock[] => [
     { type: "text", text: `기록의 이미지 ${index + 1}: ${image.path ?? "툴이 반환한 인라인 이미지"}` }, image,

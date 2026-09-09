@@ -32,7 +32,7 @@ function toolText(message: Message): string {
 }
 // 컨텍스트 압축을 검증할 긴 사용자 입력이 담긴 테스트 세션을 만든다.
 function createSession(): Session {
-  const session: Session = { id: "test-session", workspaceDirectory: "/test", system: "시스템 지침", messages: [] };
+  const session: Session = { id: "test-session", workspaceDirectory: "/test", system: "시스템 지침", projectInstructions: "", discoveredTools: [], messages: [] };
   recordMessage(session, user("테트리스 만들어줘. " + "기록 ".repeat(300)));
   return session;
 }

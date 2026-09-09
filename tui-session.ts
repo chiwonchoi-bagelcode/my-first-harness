@@ -1,4 +1,5 @@
 import { createSession } from "./session.ts";
+import { readProjectInstructions } from "./project-instructions.ts";
 import { listSessions as readSessions, loadSession as restoreSession, saveSession as persistSession } from "./session-store.ts";
 import { attachmentPath, checkImageInput, loadImage } from "./image-content.ts";
 import { textOf } from "./llm-types.ts";
@@ -20,6 +21,7 @@ export const TUI_COMMANDS = [
   { name: "/plugins", usage: "/plugins", description: "내장 기능 모듈을 묶어서 켜거나 끕니다." },
   { name: "/mcp", usage: "/mcp", description: "MCP 서버 연결을 켜거나 끕니다." },
   { name: "/reload-skills", usage: "/reload-skills", description: "전역·프로젝트 스킬 파일을 다시 읽습니다." },
+  { name: "/reload-instructions", usage: "/reload-instructions", description: "작업 폴더의 AGENTS.md를 다시 읽습니다." },
   { name: "/quit", usage: "/quit", description: "작업과 연결을 정리하고 종료합니다." },
 ] as const;
 
@@ -118,6 +120,11 @@ export function createTuiSession(options: TuiOptions) {
           if (!options.extensions) throw new Error("확장 기능 관리가 연결되지 않았습니다.");
           const kind = name.slice(1) as ExtensionKind;
           update({ resumePicker: undefined, extensionPicker: { kind, items: options.extensions.list(kind) } });
+        } else if (name === "/reload-instructions") {
+          session.projectInstructions = readProjectInstructions(paths.workspaceDirectory);
+          await history.append({ sessionId: session.id }, { type: "instructions-reloaded", projectInstructions: session.projectInstructions });
+          await saveSession(session, paths);
+          append("notice", "AGENTS.md를 다시 읽었습니다. 파일이 없으면 프로젝트 지침은 비워집니다.");
         } else if (name === "/reload-skills") {
           if (!options.extensions) throw new Error("확장 기능 관리가 연결되지 않았습니다.");
           await options.extensions.reloadSkills();
@@ -125,7 +132,7 @@ export function createTuiSession(options: TuiOptions) {
         } else if (name === "/attach") {
           if (!supportsImages) throw new Error("현재 모델 연결은 이미지 입력이 비활성화되어 있습니다.");
           const image = await loadImage(attachmentPath(trimmed));
-          checkImageInput([...session.messages, { role: "user", content: [...images, image] }], true);
+          checkImageInput([{ role: "user", content: [...images, image] }], true, false);
           images.push(image);
           update({ pendingImages: images.length });
           append("notice", `첨부: ${image.path} (${image.width}×${image.height}) — 다음 메시지에 전달`);

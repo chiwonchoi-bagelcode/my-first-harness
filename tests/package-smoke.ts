@@ -26,6 +26,7 @@ async function main() {
     const files = listing.trim().split("\n");
     assert.ok(files.includes("package/dist/my-first-harness.js"));
     assert.ok(files.includes("package/dist/environment.js"));
+    assert.ok(files.includes("package/dist/image-request.js"));
     for (const file of files) {
       assert.match(file, /^package\/(?:package\.json|README(?:\.[^/]+)?|LICEN[CS]E(?:\.[^/]+)?|dist\/(?:[\w-]+\.js|(?:adapters|tools)\/[\w-]+\.js))$/i);
     }

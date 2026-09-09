@@ -36,7 +36,7 @@ export async function mcpResultContent(result: CallToolResult): Promise<ToolCont
   const parts: ContentBlock[] = [];
   for (const block of result.content) {
     if (block.type === "image") {
-      if (block.data.length > 4 * Math.ceil(MAX_IMAGE_BYTES / 3)) throw new Error("이미지는 4 MiB 이하여야 합니다.");
+      if (block.data.length > 4 * Math.ceil(MAX_IMAGE_BYTES / 3)) throw new Error("원본 이미지는 20 MiB 이하여야 합니다.");
       const bytes = Buffer.from(block.data, "base64");
       if (bytes.toString("base64") !== block.data) throw new Error("MCP 이미지의 base64 형식이 올바르지 않습니다.");
       const image = await imageFromBytes(bytes);
