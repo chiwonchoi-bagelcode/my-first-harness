@@ -230,7 +230,7 @@ test("CLI는 모든 코어 이벤트를 기존 화면 문구로 표시한다", (
 test("자동 압축 후에도 최근 요청과 원본 이력은 유지되고 실제 스텝은 새 컨텍스트를 받는다", async () => {
   let calls = 0;
   const { agent, records } = fixture({
-    contextBudget: { contextWindow: 2000, reservedOutputTokens: 100, safetyMarginTokens: 200, retainRatio: 0.1 },
+    contextBudget: { contextWindow: 3000, reservedOutputTokens: 100, safetyMarginTokens: 200, retainRatio: 0.1 },
     // 첫 호출만 요약하고 두 번째 호출에서 최신 사용자 지시의 원문을 확인한다.
     async generate(request) {
       calls++;

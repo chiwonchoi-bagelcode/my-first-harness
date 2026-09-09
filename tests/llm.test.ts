@@ -3,6 +3,7 @@ import test from "node:test";
 import { summarize } from "../llm.ts";
 import { registerOtherLLMTools } from "../tools/other-llm.ts";
 import type { LLMAdapter, LLMRequest, Message, StopReason } from "../llm-types.ts";
+import { OPINION_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT } from "../prompts.ts";
 
 test("요약 요청은 툴 없이 공통 기록 JSON과 요약 지침을 보낸다", async () => {
   const conversation: Message[] = [
@@ -15,6 +16,7 @@ test("요약 요청은 툴 없이 공통 기록 JSON과 요약 지침을 보낸�
       assert.deepEqual(request.tools, []);
       assert.equal(request.maxOutputTokens, 2048);
       assert.match(request.system, /실제 툴 결과/);
+      assert.equal(request.system, SUMMARY_SYSTEM_PROMPT);
       assert.equal(request.messages[0].role, "user");
       const block = request.messages[0].content[0];
       if (block.type !== "text") throw new Error("expected text");
@@ -47,7 +49,7 @@ test("다른 LLM에게 묻기 툴도 공통 어댑터로 독립적인 요청을 
     },
   });
   assert.equal(await tool.execute({ ask: "어떻게 생각해?" }), "의견입니다");
-  assert.deepEqual(request!, { system: "", tools: [],
+  assert.deepEqual(request!, { system: OPINION_SYSTEM_PROMPT, tools: [],
     messages: [{ role: "user", content: [{ type: "text", text: "어떻게 생각해?" }] }],
   });
 });

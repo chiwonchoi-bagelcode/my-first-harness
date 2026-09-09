@@ -1,3 +1,5 @@
+import { skillInstructions } from "./prompts.ts";
+
 // 본문을 읽기 전에 스킬을 선택하는 데 필요한 이름·설명·파일 위치.
 export type SkillMetadata = {
   name: string;
@@ -36,16 +38,6 @@ export class SkillManager {
     const catalog = this.getCatalog().filter((skill) => skill.enabled)
       .map(({ name, description, location }) => ({ name, description, location }));
     if (catalog.length === 0) return [];
-    // DSH 스킬 목록 원문을 유지하되 전용 skill 툴 대신 파일 읽기로 연결한다.
-    return [`<system-reminder>
-A skill is a reusable set of task-specific instructions. The following skills are available in this session:
-
-<available_skills>
-${JSON.stringify(catalog, null, 2)}
-</available_skills>
-
-If the user names a skill, or the task clearly matches a skill's description, call the readTextFile tool with path set to the exact location from this catalog before taking task actions. Load all applicable skills, then follow their full instructions. This catalog contains summaries only; do not infer or follow a skill's instructions until it has been loaded.
-</system-reminder>`,
-    ];
+    return [skillInstructions(catalog)];
   }
 }

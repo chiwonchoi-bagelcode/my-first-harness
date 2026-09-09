@@ -1,10 +1,11 @@
 import { textOf } from "../llm-types.ts";
 import type { LLMAdapter } from "../llm-types.ts";
+import { OPINION_SYSTEM_PROMPT } from "../prompts.ts";
 
 // 현재 대화와 분리된 질문을 같은 어댑터로 보내 정상 완료된 답변을 반환한다.
 async function getOtherLLMsOpinion(ask: string, adapter: LLMAdapter) {
   const result = await adapter.generate({
-    system: "",
+    system: OPINION_SYSTEM_PROMPT,
     messages: [{ role: "user", content: [{ type: "text", text: ask }] }],
     tools: [],
   });
@@ -19,7 +20,7 @@ export function registerOtherLLMTools(
 ) {
   toolManager.register({
     name: "getOtherLLMsOpinion",
-    description: "다른 LLM에게 질문하고 답을 받는다",
+    description: "같은 모델에 현재 대화와 분리된 독립적인 의견을 묻는다. 필요한 맥락을 질문에 포함해야 하며 파일 접근이나 실제 검증은 수행하지 않는다.",
     parameters: {
       type: "object",
       properties: {

@@ -18,6 +18,7 @@
     "tui": "node my-first-harness.ts --tui",
     "prepack": "pnpm run build",
     "test": "node --test tests/*.test.ts",
+    "test:prompts": "node tests/prompt-eval.ts",
     "test:mcp": "node tests/mcp-smoke.ts",
     "test:playwright": "node tests/playwright-smoke.ts",
     "test:responses": "node tests/responses-smoke.ts",
