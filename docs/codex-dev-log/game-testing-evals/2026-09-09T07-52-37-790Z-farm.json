@@ -1,0 +1,60 @@
+{
+  "model": "farm",
+  "calls": 11,
+  "realMs": 34630,
+  "toolSequence": [
+    "readTextFile",
+    "ToolSearch",
+    "mcp__playwright__browser_navigate",
+    "gameTestStart",
+    "gameTestObserve",
+    "gameTestAct",
+    "gameTestObserve",
+    "gameTestAct",
+    "gameTestObserve",
+    "gameTestStop"
+  ],
+  "skillRead": true,
+  "startRate": 0.1,
+  "observes": 3,
+  "acts": [
+    {
+      "testId": "gt-9f5dc2d6",
+      "keys": [
+        "ArrowLeft"
+      ],
+      "holdGameMs": 1,
+      "observationId": "ob-15c6e69d"
+    },
+    {
+      "testId": "gt-9f5dc2d6",
+      "keys": [
+        "ArrowLeft"
+      ],
+      "holdGameMs": 1,
+      "observationId": "ob-8df05f66"
+    }
+  ],
+  "observedGameTimes": [
+    195,
+    805,
+    1330
+  ],
+  "violations": [],
+  "stopSummary": {
+    "alreadyStopped": false,
+    "releasedKeys": [],
+    "clockResumed": true,
+    "testId": "gt-9f5dc2d6",
+    "mode": "stopped",
+    "rate": 0.1,
+    "gameTimeMs": 1677,
+    "runForCalls": 335,
+    "achievedRate": 0.0996942970745418,
+    "droppedMs": 0,
+    "heldKeys": [],
+    "note": "resume은 가짜 시계를 진행 상태로 바꾼 것이며 원래 시간 API로 되돌린 것은 아닙니다. 완전한 초기화가 필요하면 페이지를 새로 열어야 합니다."
+  },
+  "finalX": 160,
+  "answer": "플레이 테스트를 완료했습니다.\n\n- 테스트 속도: `0.1`\n- `ArrowLeft` 입력: 2회, 각 입력 사이에 화면 관찰\n- 마지막 HUD: `ticks 14 · x 160`\n- 최종 `x` 값: **160**\n- 마지막 관찰의 게임 시간: **1330ms**\n- 테스트 종료 상태: 정상 종료 (`droppedMs: 0`)"
+}

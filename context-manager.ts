@@ -1,7 +1,7 @@
 import { withoutReplayState } from "./llm-types.ts";
 import { imagesOf, summaryContent } from "./image-content.ts";
 import type { Message, LLMRequest } from "./llm-types.ts";
-import { estimateMessageTokens, estimateRequestTokens, compactionThreshold, DEFAULT_CONTEXT_BUDGET } from "./token-budget.ts";
+import { estimateImageTokens, estimateMessageTokens, estimateRequestTokens, compactionThreshold, DEFAULT_CONTEXT_BUDGET } from "./token-budget.ts";
 import type { ContextBudget } from "./token-budget.ts";
 
 // 압축 가능한 요청용 대화 상태이며 실행 기록 저장은 호출자가 담당한다.
@@ -14,10 +14,11 @@ export function recordMessage(session: SessionContext, message: Message) {
   session.messages.push(message);
 }
 
-// Base64는 제외하고 이미지당 4,000자 가중치를 더한다. 실제 이미지 토큰 수는 아니다.
+// Base64는 제외하고 이미지는 시각 토큰 추정치를 글자 수(토큰당 4자)로 환산해 더한다. 표시·기록용 크기다.
 export function contextSize(session: SessionContext) {
   const content = summaryContent(session.messages);
-  return (content[0].type === "text" ? content[0].text.length : 0) + imagesOf(session.messages).length * 4000;
+  const imageChars = imagesOf(session.messages).reduce((sum, image) => sum + estimateImageTokens(image.width, image.height) * 4, 0);
+  return (content[0].type === "text" ? content[0].text.length : 0) + imageChars;
 }
 
 // 요청 전체의 추정 토큰이 모델별 입력 예산에 도달했는지 확인한다.

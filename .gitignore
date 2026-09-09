@@ -9,7 +9,6 @@ node_modules/
 
 # Session data
 .my-first-harness/sessions/
-.my-first-harness/mcp-files/
 .my-first-harness/mcp-playwright/
 
 # Build and test output

@@ -1,4 +1,5 @@
 import type { LLMRequest, Message } from "./llm-types.ts";
+import { requestImageSize } from "./image-request.ts";
 
 // 모델·연결별 운영 예산이다. 공개 한도보다 작은 값을 선택할 수도 있다.
 export type ContextBudget = {
@@ -21,12 +22,19 @@ export function estimateTextTokens(text: string): number {
   return Math.ceil(tokens);
 }
 
-// 이미지 원본 바이트 대신 장당 4,000토큰을 잡는다. 실제 시각 토큰 계산은 아니다.
+// 실제 전송 크기(가로×세로)를 750으로 나눈다. Anthropic의 공개 규칙이며 Farm(Responses) 실측 390×844 ≈ 500토큰과 같은 자릿수다.
+// 이전의 장당 4,000은 실측의 7배여서 압축을 너무 일찍 발동시켰다. 작은 이미지는 최소 256으로 잡는다.
+export function estimateImageTokens(width: number, height: number): number {
+  const sent = requestImageSize(width, height);
+  return Math.max(256, Math.ceil(sent.width * sent.height / 750));
+}
+
+// 이미지는 원본 바이트 대신 전송 크기 기반 시각 토큰으로 더한다. 크기 정보가 없으면 최대 전송 크기로 본다.
 export function estimateMessageTokens(message: Message): number {
   let imageTokens = 0;
   const content = JSON.stringify({ role: message.role, content: message.content }, (_key, value) => {
     if (value && typeof value === "object" && value.type === "image") {
-      imageTokens += 4000;
+      imageTokens += estimateImageTokens(typeof value.width === "number" ? value.width : 1568, typeof value.height === "number" ? value.height : 1568);
       return { ...value, data: undefined };
     }
     return value;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { estimateMessageTokens, estimateRequestTokens, estimateTextTokens, compactionThreshold, retentionTokens } from "../token-budget.ts";
+import { estimateMessageTokens, estimateRequestTokens, estimateTextTokens, compactionThreshold, retentionTokens, estimateImageTokens } from "../token-budget.ts";
 import { compactSession, shouldCompact } from "../context-manager.ts";
 import { createModelAdapter } from "../model-config.ts";
 import type { Message, LLMRequest } from "../llm-types.ts";
@@ -31,7 +31,12 @@ test("이미지 Base64 길이는 무시하고 장수·재전송 정보는 크기
   const image = { type: "image" as const, mediaType: "image/png" as const, width: 100, height: 100, data: "abc" };
   const a: Message = { role: "user", content: [image] };
   assert.equal(estimateMessageTokens(a), estimateMessageTokens({ role: "user", content: [{ ...image, data: "x".repeat(100_000) }] }));
-  assert.ok(estimateMessageTokens({ role: "user", content: [image, image] }) > estimateMessageTokens(a) + 4000);
+  assert.ok(estimateMessageTokens({ role: "user", content: [image, image] }) >= estimateMessageTokens(a) + estimateImageTokens(100, 100));
+  // 전송 크기 × 세로 / 750. Farm 실측(390×844 ≈ 500토큰)과 같은 자릿수이며, 큰 원본은 축소된 전송 크기로 계산한다.
+  assert.equal(estimateImageTokens(128, 128), 256);
+  assert.equal(estimateImageTokens(390, 844), 439);
+  assert.equal(estimateImageTokens(1280, 720), 1229);
+  assert.equal(estimateImageTokens(3456, 2234), Math.ceil(1372 * 887 / 750));
   const assistant: Message = { role: "assistant", content: [{ type: "text", text: "답변" }] };
   assert.ok(estimateMessageTokens({ ...assistant, replayState: { adapter: "test", provider: "test", model: "test", data: "r".repeat(5000) } }) > estimateMessageTokens(assistant));
 });

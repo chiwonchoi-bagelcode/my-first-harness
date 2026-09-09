@@ -18,7 +18,7 @@ test("Playwright는 설치된 CLI와 프로젝트 cwd·별도 프로필로 등�
   t.after(() => rm(directory, { recursive: true, force: true }));
   const paths = createHarnessPaths(directory, join(directory, "home"));
   const configs = await createMcpServerConfigs(paths);
-  assert.deepEqual(configs.map((config) => config.name), ["filesystem", "memory", "playwright", "microsoft", "cloudflare"]);
+  assert.deepEqual(configs.map((config) => config.name), ["memory", "playwright"]);
   for (const config of configs) {
     if (config.transport === "stdio") {
       await access(config.args[0]);
@@ -29,8 +29,13 @@ test("Playwright는 설치된 CLI와 프로젝트 cwd·별도 프로필로 등�
   assert.ok(playwright.transport === "stdio");
   assert.equal(playwright.command, "node");
   assert.match(playwright.args[0], /[/\\]cli\.js$/);
-  assert.deepEqual(playwright.args.slice(1), ["--isolated",
+  assert.deepEqual(playwright.args.slice(1, 4), ["--isolated",
     "--output-dir", join(paths.projectHarnessDirectory, "mcp-playwright")]);
+  // 게임 테스트 컨트롤러는 실제 파일이어야 MCP가 기동한다.
+  assert.equal(playwright.args[4], "--init-page");
+  assert.match(playwright.args[5], /[/\\]game-testing[/\\]mcp-controller\.cjs$/);
+  await access(playwright.args[5]);
+  assert.equal(playwright.args.length, 6);
 });
 
 test("서버별 이름을 구분하고 긴 이름/특수문자도 64자 안에서 구분한다", () => {

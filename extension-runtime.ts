@@ -2,7 +2,8 @@ import { PluginManager } from "./plugin-manager.ts";
 import type { HarnessPlugin } from "./plugin-manager.ts";
 import { SkillManager } from "./skill-manager.ts";
 import { ToolManager } from "./tool-manager.ts";
-import { loadSkills } from "./skill-loader.ts";
+import { readFile } from "node:fs/promises";
+import { loadSkills, parseSkillMetadata } from "./skill-loader.ts";
 import { connectMcpServer } from "./mcp-client.ts";
 import type { McpServerConfig } from "./mcp-client.ts";
 import type { HarnessPaths } from "./harness-paths.ts";
@@ -55,10 +56,28 @@ export async function createExtensionRuntime(options: {
     });
   }
 
-  // 디스크에서 완성된 목록을 만든 뒤 한 번에 교체한다.
+  // 디스크의 파일 스킬과 켜진 플러그인의 스킬을 합쳐 완성된 목록을 만든 뒤 한 번에 교체한다.
   async function scanSkills() {
     const next = new SkillManager();
     await loadSkills(next, paths);
+    const active = new Set(manager.list().filter((entry) => entry.active).map((entry) => entry.name));
+    for (const plugin of plugins) {
+      if (!active.has(owner("plugins", plugin.name))) continue;
+      for (const location of plugin.skills ?? []) {
+        try {
+          const skill = parseSkillMetadata(await readFile(location, "utf8"), location);
+          if (!skill) continue;
+          // 같은 이름은 사용자가 편집하는 파일 스킬을 유지하고 플러그인 스킬을 건너뛴다. 묵시적으로 덮어쓰지 않는다.
+          if (next.skills.some((entry) => entry.name === skill.name)) {
+            console.warn(`[skills] ${location} 건너뜀: 같은 이름의 스킬이 이미 있습니다 (${skill.name})`);
+            continue;
+          }
+          next.register(skill);
+        } catch (error) {
+          console.warn(`[skills] ${location} 건너뜀: ${error instanceof Error ? error.message : error}`);
+        }
+      }
+    }
     skillManager.replace(next.skills);
     for (const skill of next.skills) skillManager.setEnabled(skill.name, enabled("skills", skill.name));
   }
@@ -96,8 +115,9 @@ export async function createExtensionRuntime(options: {
   }
   try {
     for (const [name, value] of Object.entries(settings.tools)) toolManager.setEnabled(name, value);
-    await scanSkills();
     for (const plugin of plugins) await apply("plugins", plugin.name);
+    // 플러그인 스킬은 활성 상태를 반영해야 하므로 플러그인 적용 뒤에 목록을 만든다.
+    await scanSkills();
     for (const server of servers) {
       await apply("mcp", server.name).catch(() => {});
     }
@@ -114,7 +134,11 @@ export async function createExtensionRuntime(options: {
         settings = next;
         if (kind === "skills") skillManager.setEnabled(name, enabled(kind, name));
         else if (kind === "tools") toolManager.setEnabled(name, enabled(kind, name));
-        else await apply(kind, name);
+        else if (kind === "mcp") await apply(kind, name);
+        else {
+          // 플러그인 활성 상태가 바뀌면(실패로 꺼진 경우 포함) 소유 스킬 노출도 함께 갱신한다.
+          try { await apply(kind, name); } finally { await scanSkills(); }
+        }
       });
     },
     // 자동 감시는 도입하지 않고 명시적인 명령에서만 파일 목록을 다시 읽는다.

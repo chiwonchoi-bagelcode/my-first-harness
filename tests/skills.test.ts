@@ -128,16 +128,25 @@ test("전문과 참조 파일은 기존 readTextFile 결과로만 컨텍스트�
   assert.deepEqual(resumed.messages, session.messages);
 });
 
-test("설치한 공개 스킬을 발견하고 보조 파일/라이선스도 그대로 사용할 수 있다", async (t) => {
+test("설치한 공개 스킬을 발견하고 보조 파일/라이선스는 목록에 넣지 않고 그대로 둔다", async (t) => {
   const paths = await fixture(t);
   const project = fileURLToPath(new URL("..", import.meta.url));
   const manager = new SkillManager();
   await loadSkills(manager, createHarnessPaths(project, dirname(paths.userHarnessDirectory)));
-  for (const name of ["frontend-design", "webapp-testing", "counter-check"]) {
+  for (const name of ["frontend-design", "counter-check"]) {
     assert.ok(manager.skills.some((skill) => skill.name === name));
   }
-  const skill = manager.skills.find((skill) => skill.name === "webapp-testing")!;
-  assert.match(await readFile(join(dirname(skill.location), "scripts", "with_server.py"), "utf8"), /argparse/);
+  const skill = manager.skills.find((skill) => skill.name === "frontend-design")!;
   assert.match(await readFile(join(dirname(skill.location), "LICENSE.txt"), "utf8"), /Apache License/);
-  assert.doesNotMatch(JSON.stringify(manager.getInstructions()), /from playwright.sync_api import sync_playwright/);
+  // 보조 스크립트를 가진 스킬도 목록에는 이름·설명·위치만 들어가고 스크립트 본문은 읽기 전까지 노출되지 않는다.
+  const scripted = join(paths.projectSkillsDirectory, "scripted");
+  await mkdir(join(scripted, "scripts"), { recursive: true });
+  await writeFile(join(scripted, "SKILL.md"), "---\nname: scripted\ndescription: 보조 스크립트를 가진 스킬\n---\nRun scripts/helper.py --help first.");
+  await writeFile(join(scripted, "scripts", "helper.py"), "import argparse\nSECRET_SCRIPT_BODY = 1\n");
+  const local = new SkillManager();
+  await loadSkills(local, paths);
+  const found = local.skills.find((entry) => entry.name === "scripted")!;
+  assert.ok(found);
+  assert.match(await readFile(join(dirname(found.location), "scripts", "helper.py"), "utf8"), /argparse/);
+  assert.doesNotMatch(JSON.stringify(local.getInstructions()), /SECRET_SCRIPT_BODY|argparse|helper\.py --help/);
 });

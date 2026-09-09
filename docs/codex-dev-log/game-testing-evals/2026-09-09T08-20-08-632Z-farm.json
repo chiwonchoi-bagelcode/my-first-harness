@@ -1,0 +1,79 @@
+{
+  "model": "farm",
+  "calls": 15,
+  "realMs": 58251,
+  "toolSequence": [
+    "readTextFile",
+    "ToolSearch",
+    "mcp__playwright__browser_navigate",
+    "gameTestStart",
+    "gameTestClock",
+    "gameTestObserve",
+    "gameTestAct",
+    "gameTestClock",
+    "gameTestObserve",
+    "gameTestAct",
+    "gameTestObserve",
+    "gameTestAct",
+    "gameTestObserve",
+    "gameTestStop"
+  ],
+  "skillRead": true,
+  "startRate": 0.1,
+  "checkVerdicts": [
+    "controllable"
+  ],
+  "measuredL": 2748,
+  "appliedRate": 0.091,
+  "expectedRate": 0.091,
+  "observes": 4,
+  "acts": [
+    {
+      "testId": "gt-926b61df",
+      "keys": [
+        "ArrowLeft"
+      ],
+      "holdGameMs": 1,
+      "observationId": "ob-3e68f069"
+    },
+    {
+      "testId": "gt-926b61df",
+      "keys": [
+        "ArrowLeft"
+      ],
+      "holdGameMs": 1,
+      "observationId": "ob-4b649f50"
+    },
+    {
+      "testId": "gt-926b61df",
+      "keys": [
+        "ArrowLeft"
+      ],
+      "holdGameMs": 1,
+      "observationId": "ob-880566f6"
+    }
+  ],
+  "observedGameTimes": [
+    1310,
+    2195,
+    2720,
+    3370
+  ],
+  "violations": [],
+  "stopSummary": {
+    "alreadyStopped": false,
+    "releasedKeys": [],
+    "clockResumed": true,
+    "testId": "gt-926b61df",
+    "mode": "stopped",
+    "rate": 0.091,
+    "gameTimeMs": 3645,
+    "runForCalls": 630,
+    "achievedRate": 0.09073068766515456,
+    "droppedMs": 0,
+    "heldKeys": [],
+    "note": "resume은 가짜 시계를 진행 상태로 바꾼 것이며 원래 시간 API로 되돌린 것은 아닙니다. 완전한 초기화가 필요하면 페이지를 새로 열어야 합니다."
+  },
+  "finalX": 140,
+  "answer": "플레이 테스트를 완료했습니다.\n\n- **Clock check:** `controllable`\n- **H:** 250ms (스킬 기본값)\n- **측정된 반응 지연 L:** 2748ms\n- **적용 rate:** `0.091` (`250 / 2748` 반올림)\n- **Play phase 입력:** ArrowLeft 2회, 각 입력 사이에 화면 관찰\n  - 1회 후 `x 160`, `observationToInputGameMs: 315`\n  - 2회 후 `x 140`, `observationToInputGameMs: 360`\n- **마지막 HUD:** `ticks 34 · x 140`\n- **마지막 관찰 game time:** `3370ms`\n- **검증 결과:** 각 ArrowLeft 입력마다 x가 20px씩 감소했습니다.\n- **테스트 종료:** 완료 (`droppedMs: 0`)"
+}

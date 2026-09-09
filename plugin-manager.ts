@@ -2,11 +2,13 @@ import type { ToolManager, ToolRegistrar } from "./tool-manager.ts";
 
 // 플러그인이 소유한 프로세스·연결을 정리하는 함수다.
 export type PluginCleanup = () => void | Promise<void>;
-// 이름과 등록 함수, 선택적인 자원 정리 함수만 갖는 내장 플러그인 규격이다.
+// 이름과 등록 함수, 선택적인 자원 정리 함수와 소유 스킬 파일 경로를 갖는 내장 플러그인 규격이다.
 export type HarnessPlugin = {
   name: string;
   description: string;
   setup(tools: ToolRegistrar): void | PluginCleanup | Promise<void | PluginCleanup>;
+  // 플러그인이 소유하는 SKILL.md 절대 경로다. 플러그인이 켜져 있는 동안만 스킬 목록에 노출한다.
+  skills?: string[];
 };
 // 한 플러그인의 활성 상태와 정확히 해제할 등록들을 보관한다.
 type PluginEntry = {

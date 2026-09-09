@@ -27,8 +27,11 @@ async function main() {
     assert.ok(files.includes("package/dist/my-first-harness.js"));
     assert.ok(files.includes("package/dist/environment.js"));
     assert.ok(files.includes("package/dist/image-request.js"));
+    assert.ok(files.includes("package/dist/game-testing/mcp-controller.cjs"));
+    assert.ok(files.includes("package/dist/game-testing/skills/game-testing/SKILL.md"));
     for (const file of files) {
-      assert.match(file, /^package\/(?:package\.json|README(?:\.[^/]+)?|LICEN[CS]E(?:\.[^/]+)?|dist\/(?:[\w-]+\.js|(?:adapters|tools)\/[\w-]+\.js))$/i);
+      // 게임 테스트 컨트롤러(.cjs)와 플러그인 스킬은 tsc 밖의 자산이라 build가 dist로 복사한다.
+      assert.match(file, /^package\/(?:package\.json|README(?:\.[^/]+)?|LICEN[CS]E(?:\.[^/]+)?|dist\/(?:[\w-]+\.js|(?:adapters|tools|game-testing)\/[\w-]+\.js|game-testing\/mcp-controller\.cjs|game-testing\/skills\/[\w-]+\/SKILL\.md))$/i);
     }
     console.log("PASS: 배포 목록에 실행 JS·메타데이터만 포함 (.env·세션·테스트·Bun 바이너리 제외)");
 
@@ -69,7 +72,7 @@ async function main() {
     }
     try {
       await until(() => output.endsWith("> "));
-      for (const name of ["filesystem", "memory", "playwright"]) {
+      for (const name of ["memory", "playwright"]) {
         assert.match(output, new RegExp(`\\[mcp\\] ${name} \\(stdio\\): 툴 [1-9]\\d*개 등록`), `설치된 ${name} 서버 연결 누락\n${output}\n${errors}`);
       }
       const id = /session: ([\w-]+)/.exec(output)![1];
@@ -87,7 +90,7 @@ async function main() {
         timer.unref();
       })]);
       assert.equal(code, 0, errors);
-      console.log("PASS: 다른 cwd에서 명령 실행 → 로컬 MCP 3개 → PNG·JPEG·WebP 첨부 → 세션 저장 → 종료");
+      console.log("PASS: 다른 cwd에서 명령 실행 → 로컬 MCP 2개 → PNG·JPEG·WebP 첨부 → 세션 저장 → 종료");
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGINT");
       await closed;

@@ -3,6 +3,7 @@ import { registerTimeTools } from "./tools/time.ts";
 import { registerOtherLLMTools } from "./tools/other-llm.ts";
 import { registerFilesystemTools } from "./tools/filesystem.ts";
 import { registerShellTools } from "./tools/shell.ts";
+import { createGameTestingPlugin } from "./tools/game-testing.ts";
 import type { HarnessPlugin } from "./plugin-manager.ts";
 import type { HarnessPaths } from "./harness-paths.ts";
 import type { LLMAdapter } from "./llm-types.ts";
@@ -26,5 +27,7 @@ export function createBuiltinPlugins(paths: HarnessPaths, adapter: LLMAdapter): 
         return () => jobs.dispose();
       },
     },
+    // Playwright MCP 안의 컨트롤러와 연결해 느린 게임 시계로 플레이 테스트하는 툴·스킬을 등록한다.
+    createGameTestingPlugin(paths),
   ];
 }

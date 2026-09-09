@@ -8,19 +8,21 @@
   "files": [
     "dist/*.js",
     "dist/adapters/*.js",
-    "dist/tools/*.js"
+    "dist/tools/*.js",
+    "dist/game-testing/**"
   ],
   "engines": {
     "node": ">=24.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node --input-type=module -e \"import { cpSync, mkdirSync } from 'node:fs'; mkdirSync('dist/game-testing', { recursive: true }); cpSync('game-testing/mcp-controller.cjs', 'dist/game-testing/mcp-controller.cjs'); cpSync('game-testing/skills', 'dist/game-testing/skills', { recursive: true });\"",
     "tui": "node my-first-harness.ts --tui",
     "prepack": "pnpm run build",
     "test": "node --test tests/*.test.ts",
     "test:prompts": "node tests/prompt-eval.ts",
     "test:mcp": "node tests/mcp-smoke.ts",
     "test:playwright": "node tests/playwright-smoke.ts",
+    "test:game-testing": "node tests/game-testing-smoke.ts",
     "test:responses": "node tests/responses-smoke.ts",
     "test:farm": "node tests/farm-smoke.ts",
     "test:images": "node tests/images-smoke.ts",
@@ -42,7 +44,6 @@
   "type": "module",
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
-    "@modelcontextprotocol/server-filesystem": "^2026.8.31",
     "@modelcontextprotocol/server-memory": "^2026.8.31",
     "@playwright/mcp": "0.0.80",
     "ajv": "^8.20.0",
@@ -50,9 +51,9 @@
     "ink": "7.1.1",
     "react": "^19.2.8",
     "react-devtools-core": "^7.0.1",
+    "sharp": "0.35.4",
     "string-width": "^8.2.2",
     "wrap-ansi": "^10.0.1",
-    "sharp": "0.35.4",
     "yaml": "^2.9.0"
   },
   "devDependencies": {

@@ -220,3 +220,58 @@ test("잘못된 설정은 조용히 무시하거나 덮어쓰지 않는다", asy
   await writeFile(join(paths.projectHarnessDirectory, "settings.json"), '{"extensions":{"tools":{"x":"false"}}}');
   await assert.rejects(readExtensionSettings(paths), /boolean/);
 });
+
+test("플러그인 소유 스킬은 켜진 동안만 노출되고 같은 이름의 파일 스킬을 덮어쓰지 않는다", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "harness-plugin-skills-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const paths = createHarnessPaths(directory, join(directory, "home"));
+  // 플러그인이 배포하는 스킬 파일 셋: 정상 하나, 파일 스킬과 이름이 겹치는 하나, frontmatter가 없는 하나.
+  const pluginSkills = join(directory, "plugin-skills");
+  for (const [name, description] of [["game-play", "plugin skill"], ["sample", "plugin duplicate"]]) {
+    await mkdir(join(pluginSkills, name), { recursive: true });
+    await writeFile(join(pluginSkills, name, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\nbody`);
+  }
+  await mkdir(join(pluginSkills, "broken"), { recursive: true });
+  await writeFile(join(pluginSkills, "broken", "SKILL.md"), "no frontmatter");
+  const fileSkill = join(paths.projectSkillsDirectory, "sample");
+  await mkdir(fileSkill, { recursive: true });
+  await writeFile(join(fileSkill, "SKILL.md"), "---\nname: sample\ndescription: file skill\n---\nbody");
+  const warnings: string[] = [];
+  const warn = console.warn;
+  console.warn = (message: unknown) => { warnings.push(String(message)); };
+  t.after(() => { console.warn = warn; });
+  let fail = false;
+  const skillManager = new SkillManager();
+  const plugins = [{ name: "game", description: "테스트", setup(registrar: ToolRegistrar) {
+    if (fail) throw new Error("setup failed");
+    registrar.register(tool("play"));
+  }, skills: ["game-play", "sample", "broken"].map((name) => join(pluginSkills, name, "SKILL.md")) }];
+  const runtime = await createExtensionRuntime({ paths, toolManager: new ToolManager(), skillManager, plugins, servers: [] });
+  t.after(() => runtime.dispose());
+  const names = () => runtime.list("skills").map((skill) => skill.name).sort();
+  assert.deepEqual(names(), ["game-play", "sample"]);
+  assert.match(runtime.list("skills").find((skill) => skill.name === "sample")!.description, /file skill/);
+  assert.equal(warnings.filter((line) => /같은 이름/.test(line)).length, 1);
+  assert.equal(warnings.filter((line) => /broken/.test(line)).length, 1);
+  // 개별 스킬 off는 플러그인 스킬에도 적용되며 플러그인의 툴은 그대로 켜져 있다.
+  await runtime.toggle("skills", "game-play");
+  assert.doesNotMatch(skillManager.getInstructions().join(""), /game-play/);
+  assert.equal(runtime.list("tools").find((entry) => entry.name === "play")!.active, true);
+  // 플러그인을 끄면 소유 스킬만 사라지고 재검색도 되살리지 않는다.
+  await runtime.toggle("plugins", "game");
+  assert.deepEqual(names(), ["sample"]);
+  await runtime.reloadSkills();
+  assert.deepEqual(names(), ["sample"]);
+  // 켜기에 실패하면 설정은 켜짐이지만 스킬은 노출하지 않는다.
+  fail = true;
+  await assert.rejects(runtime.toggle("plugins", "game"), /setup failed/);
+  assert.equal(runtime.list("plugins")[0].enabled, true);
+  assert.equal(runtime.list("plugins")[0].active, false);
+  assert.deepEqual(names(), ["sample"]);
+  // 다시 켜면 돌아오고 개별 off 설정은 유지된다.
+  fail = false;
+  await runtime.toggle("plugins", "game");
+  await runtime.toggle("plugins", "game");
+  assert.deepEqual(names(), ["game-play", "sample"]);
+  assert.equal(runtime.list("skills").find((skill) => skill.name === "game-play")!.enabled, false);
+});
