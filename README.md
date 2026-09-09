@@ -29,21 +29,15 @@ API가 돌아갈때 들어가야되는 툴과 컨텍스트,
 
 하네스가 만든 테트리스와 실행 화면이다. 전역 설치한 `my-first-harness`로 빈 폴더에서 시작했다.
 
-### NEON TETRIS — Luna, 한 번의 요청
+### NEON TETRIS — Luna, 아무 skill 없이 '테트리스 만들어줘' oneshot 결과물
 
 ![NEON TETRIS](docs/images/tetris-neon-luna.png)
 
-바닐라 JS, 라이브러리 없음. 점수·최고 점수·레벨·라인, 다음 조각, 조작 안내(← → 이동, ↑ 회전, ↓ 빠르게, Space 하드 드롭, P 일시정지).
-
-### ABYSSAL — Pressure Station — Luna, frontend-design 스킬
+### ABYSSAL — Pressure Station — Luna, frontend-design 스킬, plan모드 경유, '네 아이디어 담아서~ 디자인 스킬 활용하고~ 끝나고 직접 테스트도~' 프롬프트 결과물
 
 ![ABYSSAL 플레이](docs/images/tetris-abyssal-luna-playing.png)
 
-심해 관측소 컨셉. 조각은 "모듈", 줄을 지우면 모듈이 안정화되어 수압 안정도가 오르고 더 깊은 곳으로 내려간다. 수압 지수·심도·안정도 게이지, 다음 모듈, 관측 로그.
-
 ![ABYSSAL 게임 오버](docs/images/tetris-abyssal-luna-gameover.png)
-
-게임 오버는 "수압이 한계를 넘었습니다". 안정화한 모듈 수를 보여주고 다시 관측으로 재시작한다.
 
 ### TUI 실행 화면 — Haiku, plan 모드
 
