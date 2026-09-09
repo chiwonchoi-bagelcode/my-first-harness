@@ -25,6 +25,32 @@ API가 돌아갈때 들어가야되는 툴과 컨텍스트,
 - **CLI·TUI**(코어는 이벤트만 내고 화면은 바꿔 끼움)
 - **게임 테스트 플러그인**(Playwright MCP 프로세스 안의 컨트롤러로 게임 시계를 정지·감속하고, 모델이 화면을 보고 키를 넣는 플레이 테스트. 적용 확인 → 반응 지연 측정 → 배속 결정 → 플레이의 절차를 스킬이 안내)
 
+## 최종 산출물
+
+하네스가 만든 테트리스와 실행 화면이다. 전역 설치한 `my-first-harness`로 빈 폴더에서 시작했다.
+
+### NEON TETRIS — Luna, 한 번의 요청
+
+![NEON TETRIS](docs/images/tetris-neon-luna.png)
+
+바닐라 JS, 라이브러리 없음. 점수·최고 점수·레벨·라인, 다음 조각, 조작 안내(← → 이동, ↑ 회전, ↓ 빠르게, Space 하드 드롭, P 일시정지).
+
+### ABYSSAL — Pressure Station — Luna, frontend-design 스킬
+
+![ABYSSAL 플레이](docs/images/tetris-abyssal-luna-playing.png)
+
+심해 관측소 컨셉. 조각은 "모듈", 줄을 지우면 모듈이 안정화되어 수압 안정도가 오르고 더 깊은 곳으로 내려간다. 수압 지수·심도·안정도 게이지, 다음 모듈, 관측 로그.
+
+![ABYSSAL 게임 오버](docs/images/tetris-abyssal-luna-gameover.png)
+
+게임 오버는 "수압이 한계를 넘었습니다". 안정화한 모듈 수를 보여주고 다시 관측으로 재시작한다.
+
+### TUI 실행 화면 — Haiku, plan 모드
+
+![TUI](docs/images/tui-haiku-plan.png)
+
+`my-first-harness haiku --tui`. 요청 "테트리스 만들어줘. 너만의 컨셉과 아이디어를 넣고, frontend design skill을 활용하고, 만든 후에는 게임 테스트까지 해줘"에 모델이 frontend-design·game-testing 스킬 본문을 읽고 폴더를 확인하는 장면. 위는 대화와 툴 호출 로그, 아래는 입력창·상태·키 안내.
+
 ## Quick start
 
 ### 1. 저장소 복제
