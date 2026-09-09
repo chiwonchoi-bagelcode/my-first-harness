@@ -9,6 +9,11 @@ import type { HistorySink } from "./execution-history.ts";
 import type { HarnessPaths } from "./harness-paths.ts";
 import type { ExtensionControls, ExtensionItem } from "./extension-runtime.ts";
 import type { ExtensionKind } from "./extension-settings.ts";
+import { parsePermissionMode } from "./permissions.ts";
+import type { PermissionRequest, ApprovalAnswer, PermissionMode } from "./permissions.ts";
+import { parseMode } from "./agent-mode.ts";
+import type { AgentMode } from "./agent-mode.ts";
+import type { PlanReviewAnswer } from "./plan-review.ts";
 
 // 입력창에서 선택할 수 있는 명령의 이름과 사용법이다.
 export const TUI_COMMANDS = [
@@ -22,6 +27,8 @@ export const TUI_COMMANDS = [
   { name: "/mcp", usage: "/mcp", description: "MCP 서버 연결을 켜거나 끕니다." },
   { name: "/reload-skills", usage: "/reload-skills", description: "전역·프로젝트 스킬 파일을 다시 읽습니다." },
   { name: "/reload-instructions", usage: "/reload-instructions", description: "작업 폴더의 AGENTS.md를 다시 읽습니다." },
+  { name: "/mode", usage: "/mode plan|edit|yolo", description: "Shift+Tab: edit → plan → YOLO → edit" },
+  { name: "/permissions", usage: "/permissions default|yolo", description: "YOLO는 모든 툴 권한 검사를 우회합니다." },
   { name: "/quit", usage: "/quit", description: "작업과 연결을 정리하고 종료합니다." },
 ] as const;
 
@@ -37,11 +44,15 @@ export type TuiEntry = { kind: "user" | "assistant" | "tool" | "notice" | "error
 // React 화면이 구독할 현재 표시 상태다.
 export type TuiState = {
   sessionId: string;
+  mode: AgentMode;
+  permissionMode: PermissionMode;
   entries: TuiEntry[];
   pendingImages: number;
   busy: boolean;
   status: string;
   closed: boolean;
+  approval?: PermissionRequest;
+  planReview?: { plan: string; feedback: boolean };
   resumePicker?: Awaited<ReturnType<typeof readSessions>>;
   extensionPicker?: { kind: ExtensionKind; items: ExtensionItem[]; error?: string };
 };
@@ -69,8 +80,53 @@ export function createTuiSession(options: TuiOptions) {
   let closePromise: Promise<void> | undefined;
   let activeTurn: Promise<string> | undefined;
   let stopping = false;
-  let state: TuiState = { sessionId: session.id, entries: [], pendingImages: 0, busy: false, status: "대기 중", closed: false };
+  let state: TuiState = { sessionId: session.id, mode: agent.getMode(), permissionMode: agent.getPermissionMode(), entries: [], pendingImages: 0, busy: false, status: "대기 중", closed: false };
   const listeners = new Set<() => void>();
+  let finishApproval: ((approved: ApprovalAnswer) => void) | undefined;
+  let finishPlanReview: ((answer: PlanReviewAnswer) => void) | undefined;
+
+  // 계획을 일반 출력과 구분해 표시하고 승인·피드백·중단 선택을 기다린다.
+  function requestPlanReview(plan: string, signal?: AbortSignal): Promise<PlanReviewAnswer> {
+    if (state.closed || signal?.aborted || finishApproval || finishPlanReview) return Promise.resolve({ decision: "cancel" });
+    const wasBusy = state.busy;
+    return new Promise((resolve) => {
+      // 턴 중단과 UI 종료는 승인으로 해석하지 않는다.
+      const onAbort = () => finishPlanReview?.({ decision: "cancel" });
+      finishPlanReview = (answer) => {
+        signal?.removeEventListener("abort", onAbort);
+        finishPlanReview = undefined;
+        const result = signal?.aborted || state.closed ? { decision: "cancel" } as const : answer;
+        update({ planReview: undefined, busy: state.closed || wasBusy });
+        append("notice", result.decision === "approve" ? "계획 승인 · 다음 스텝부터 edit"
+          : result.decision === "revise" ? `계획 수정 요청: ${result.feedback}` : "계획 검토 취소");
+        resolve(result);
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      append("notice", `[계획 검토]\n${plan}`);
+      update({ planReview: { plan, feedback: false }, busy: true, status: "계획 검토 · Y 승인 · N 수정 의견 · Esc 취소" });
+    });
+  }
+
+  // 승인 내용을 대화 영역에 전부 표시하고 답변·중단·종료 중 하나를 기다린다.
+  function requestApproval(request: PermissionRequest, signal?: AbortSignal): Promise<ApprovalAnswer> {
+    if (state.closed || signal?.aborted || finishApproval || finishPlanReview) return Promise.resolve(false);
+    const wasBusy = state.busy;
+    return new Promise((resolve) => {
+      // 중단된 요청의 늦은 승인 클릭은 실행 권한을 주지 않는다.
+      const onAbort = () => finishApproval?.(false);
+      finishApproval = (approved) => {
+        signal?.removeEventListener("abort", onAbort);
+        finishApproval = undefined;
+        const accepted = !signal?.aborted && !state.closed ? approved : false;
+        update({ approval: undefined, busy: state.closed || wasBusy, status: state.closed ? "종료 중" : "처리 중" });
+        append("notice", accepted === "session" ? `세션 승인: ${request.toolName} · 모든 인자 허용` : accepted ? "툴 실행 일회 승인" : "툴 실행 승인 거부·취소");
+        resolve(accepted);
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      append("notice", `[승인 요청] ${JSON.stringify(request.toolName)}\n${JSON.stringify(request.args, null, 2)}`);
+      update({ approval: structuredClone(request), busy: true, status: "Y 일회 · S 세션: 이 툴의 모든 인자 승인 · N/Enter 거부" });
+    });
+  }
 
   // 상태 객체를 교체한 뒤 화면 구독자에게 갱신을 알린다.
   function update(patch: Partial<TuiState>) {
@@ -90,6 +146,7 @@ export function createTuiSession(options: TuiOptions) {
   function onEvent(event: AgentEvent) {
     if (state.closed) return;
     switch (event.type) {
+      case "mode-changed": update({ mode: event.mode }); break;
       case "assistant-text": append("assistant", event.text); break;
       case "tool-start":
         append("tool", `${event.name} ${event.arguments}`);
@@ -126,12 +183,22 @@ export function createTuiSession(options: TuiOptions) {
         await history.append({ sessionId: session.id }, { type: "command", input });
         const command = TUI_COMMANDS.find((entry) => entry.name === name);
         if (!command) throw new Error("알 수 없는 명령입니다. /를 입력해 사용 가능한 명령을 확인하세요.");
-        if (name !== "/attach" && name !== "/resume" && trimmed !== name) throw new Error(`사용법: ${command.usage}`);
+        if (!["/attach", "/resume", "/mode", "/permissions"].includes(name) && trimmed !== name) throw new Error(`사용법: ${command.usage}`);
         if (name === "/quit") { await close(); return; }
         if (["/skills", "/tools", "/plugins", "/mcp"].includes(name)) {
           if (!options.extensions) throw new Error("확장 기능 관리가 연결되지 않았습니다.");
           const kind = name.slice(1) as ExtensionKind;
           update({ resumePicker: undefined, extensionPicker: { kind, items: options.extensions.list(kind) } });
+        } else if (name === "/permissions") {
+          agent.setPermissionMode(parsePermissionMode(trimmed.slice(name.length).trim()));
+          update({ permissionMode: agent.getPermissionMode() });
+          append("notice", agent.getPermissionMode() === "yolo" ? "YOLO: 모든 툴 권한 검사 우회 (plan의 쓰기 차단 포함)" : "권한 정책 및 세션 승인 적용");
+        } else if (name === "/mode") {
+          const target = trimmed.slice(name.length).trim();
+          agent.setMode(target === "yolo" ? "edit" : parseMode(target));
+          agent.setPermissionMode(target === "yolo" ? "yolo" : "default");
+          update({ mode: agent.getMode(), permissionMode: agent.getPermissionMode() });
+          append("notice", target === "yolo" ? "YOLO: edit + 모든 툴 권한 검사 우회" : `모드: ${agent.getMode()} · 일반 권한 정책`);
         } else if (name === "/reload-instructions") {
           session.projectInstructions = readProjectInstructions(paths.workspaceDirectory);
           await history.append({ sessionId: session.id }, { type: "instructions-reloaded", projectInstructions: session.projectInstructions });
@@ -209,6 +276,8 @@ export function createTuiSession(options: TuiOptions) {
   function close(reason = "runtime-exit") {
     closePromise ??= Promise.resolve().then(async () => {
       update({ closed: true, busy: true, status: "종료 중" });
+      finishApproval?.(false);
+      finishPlanReview?.({ decision: "cancel" });
       agent.interrupt();
       await activeTurn?.catch(() => {});
       const [result] = await Promise.allSettled([dispose()]);
@@ -219,7 +288,15 @@ export function createTuiSession(options: TuiOptions) {
     return closePromise;
   }
   return {
-    start, submit, close, onEvent, toggleExtension,
+    start, submit, close, onEvent, toggleExtension, requestApproval, requestPlanReview,
+    // 수정 의견 입력으로 바꾸되 승인 여부를 아직 확정하지 않는다.
+    beginPlanFeedback() {
+      if (state.planReview) update({ planReview: { ...state.planReview, feedback: true }, status: "계획 수정 의견 입력 · Enter 제출 · Esc 취소" });
+    },
+    // 계획 검토의 선택을 대기 중인 코어에 전달한다.
+    answerPlanReview(answer: PlanReviewAnswer) { finishPlanReview?.(answer); },
+    // 승인 화면의 키 입력은 일반 사용자 메시지로 전달하지 않는다.
+    answerApproval(approved: ApprovalAnswer) { finishApproval?.(approved); },
     // 중단 완료 전까지 busy를 유지하며 다음 요청과 현재 턴이 겹치지 않게 한다.
     interrupt() { if (activeTurn && agent.interrupt()) { stopping = true; update({ status: "중단 요청됨 · 실행 정리 중" }); } },
     // 확장 목록을 닫아도 변경한 프로젝트 설정은 유지한다.

@@ -13,9 +13,17 @@ import type { HarnessPaths } from "./harness-paths.ts";
 import type { Session } from "./session.ts";
 import type { ToolManager } from "./tool-manager.ts";
 import type { SkillManager } from "./skill-manager.ts";
+import type { PermissionPolicy, RequestApproval } from "./permissions.ts";
+import { ALLOW_ALL, createSessionApprover, parsePermissionMode } from "./permissions.ts";
+import type { PermissionMode } from "./permissions.ts";
+import { modeInstructions, modePermissions, parseMode } from "./agent-mode.ts";
+import type { AgentMode } from "./agent-mode.ts";
+import { reviewPlan } from "./plan-review.ts";
+import type { RequestPlanReview } from "./plan-review.ts";
 
 // 화면에 표시할 진행 정보다. 원문 보존용 HistoryEvent와는 별개다.
 export type AgentEvent =
+  | { type: "mode-changed"; mode: AgentMode }
   | { type: "assistant-text"; text: string }
   | { type: "tool-start"; name: string; arguments: string }
   | { type: "tool-end"; name: string; durationMs: number; content: import("./llm-types.ts").ToolContent; isError?: boolean }
@@ -36,10 +44,21 @@ export type AgentOptions = {
   paths: HarnessPaths;
   onEvent?: (event: AgentEvent) => void;
   saveSession?: typeof persistSession;
+  permissions?: PermissionPolicy;
+  requestApproval?: RequestApproval;
+  requestPlanReview?: RequestPlanReview;
 };
 
 // CLI·TUI·웹에서 호출할 실행 API다. 같은 세션의 호출은 순서대로 기다려야 한다.
 export interface Agent {
+  // 현재 권한 우회 여부를 UI에 제공한다.
+  getPermissionMode(): PermissionMode;
+  // 실행 중이 아닐 때만 권한 우회 설정을 변경한다.
+  setPermissionMode(mode: PermissionMode): void;
+  // 현재 앱의 작업 모드를 조회한다.
+  getMode(): AgentMode;
+  // 실행 중이 아닐 때 지침과 실행 정책에 사용할 모드를 함께 변경한다.
+  setMode(mode: AgentMode): void;
   // 실행 중인 턴에 중단을 요청한다. true는 요청 접수이며 완료는 이벤트로 알린다.
   interrupt(): boolean;
   // 사용자 입력 한 번에 대한 모델·툴 반복을 실행하고 최종 텍스트를 반환한다.
@@ -54,6 +73,45 @@ export function createAgent(options: AgentOptions): Agent {
   const budget = adapter.contextBudget ?? DEFAULT_CONTEXT_BUDGET;
   compactionThreshold(budget);
   let active: AbortController | undefined;
+  let mode: AgentMode = "edit";
+  let pendingPlanExit = false;
+  let permissionMode: PermissionMode = "default";
+  const approveForSession = createSessionApprover(options.requestApproval);
+
+  // 진행 중인 툴 요청이 갑자기 우회 실행되지 않게 모드 변경을 제한한다.
+  function setPermissionMode(next: PermissionMode) {
+    if (active) throw new Error("턴이 끝나거나 중단된 뒤 권한 모드를 변경하세요.");
+    permissionMode = parsePermissionMode(next);
+  }
+
+  // DSH처럼 계획 전문을 툴 인자로 받아 검토하며 모드 전환은 다음 스텝까지 미룬다.
+  toolManager.register({
+    name: "exit_plan_mode",
+    description: "Use only in plan mode. Present your plan for the user's review and, on approval, leave plan mode. Send the COMPLETE plan as markdown, starting with a # heading that names it. The user may approve (carry out the plan from your next step) or keep planning — their feedback comes back in the tool result; revise and present again.",
+    parameters: { type: "object", properties: { plan: { type: "string", pattern: "^\\s*#\\s+\\S", description: "The complete plan, as markdown, starting with a # heading that names it." } }, required: ["plan"], additionalProperties: false },
+    // 승인은 같은 배치의 후속 툴 권한을 바꾸지 않고 다음 모델 호출에만 반영한다.
+    async execute({ plan }: { plan: string }, context) {
+      if (mode !== "plan") throw new Error("exit_plan_mode is only available in plan mode.");
+      if (pendingPlanExit) throw new Error("이미 승인된 계획이 있습니다. 다음 스텝에서 실행하세요.");
+      const answer = await reviewPlan(plan, options.requestPlanReview, context?.signal);
+      context?.signal?.throwIfAborted();
+      if (answer.decision === "cancel") {
+        interrupt();
+        throw new Error("사용자가 계획 검토를 닫았습니다. plan을 유지하고 다음 메시지를 기다리세요.");
+      }
+      if (answer.decision !== "approve") {
+        throw new Error("The user chose to keep planning; revise the plan and present it again. Feedback: " + answer.feedback);
+      }
+      pendingPlanExit = true;
+      return JSON.stringify({ approved: true, instruction: "Plan approved — carry out the plan starting with your next step. Tool permissions still apply." });
+    },
+  }, { owner: "harness:plan" });
+
+  // 이미 실행 중인 턴의 지침과 승인 정책이 도중에 바뀌지 않게 한다.
+  function setMode(next: AgentMode) {
+    if (active) throw new Error("턴이 끝나거나 중단된 뒤 모드를 변경하세요.");
+    mode = parseMode(next);
+  }
 
   // 화면과 무관하게 현재 턴의 취소 신호를 발생시키며 중복 요청은 무시한다.
   function interrupt() {
@@ -71,6 +129,7 @@ export function createAgent(options: AgentOptions): Agent {
         ...skillManager.getInstructions(),
         toolManager.getSearchInstructions(),
         `현재 작업 디렉토리: ${paths.workspaceDirectory}`,
+        modeInstructions(mode),
       ].join("\n\n"),
       messages: [
         ...(session.projectInstructions ? [{ role: "user" as const, content: [{ type: "text" as const,
@@ -154,6 +213,11 @@ export function createAgent(options: AgentOptions): Agent {
       const maxOutputLimitRecoveries = 2;
       for (let stepNumber = 1; ; stepNumber++) {
         signal.throwIfAborted();
+        if (pendingPlanExit) {
+          pendingPlanExit = false;
+          mode = "edit";
+          onEvent?.({ type: "mode-changed", mode });
+        }
         const scope = { ...turnScope, step: stepNumber };
         const output = await step(session, scope);
         signal.throwIfAborted();
@@ -197,7 +261,9 @@ export function createAgent(options: AgentOptions): Agent {
             toolCall.name,
             toolCall.arguments,
             { llm: recordLLM(adapter, history, { ...scope, parentToolCallId: toolCall.id }, "other-llm", signal),
-              discoveredTools: session.discoveredTools, signal },
+              discoveredTools: session.discoveredTools, signal,
+              permissions: permissionMode === "yolo" ? ALLOW_ALL : modePermissions(mode, options.permissions ?? ALLOW_ALL),
+              requestApproval: (request, signal) => approveForSession(session.id, request, signal) },
           );
           if (Array.isArray(toolResult.content)) {
             try {
@@ -253,9 +319,14 @@ export function createAgent(options: AgentOptions): Agent {
         error: error instanceof Error ? error.message : String(error) });
       throw error;
     } finally {
+      pendingPlanExit = false;
       active = undefined;
     }
   }
 
-  return { turn, compact: compactAndSave, interrupt };
+  return { turn, compact: compactAndSave, interrupt, setMode, setPermissionMode,
+    // 권한 우회 상태는 세션 파일에 저장하지 않는다.
+    getPermissionMode: () => permissionMode,
+    // UI가 현재 선택한 모드를 표시하도록 반환한다.
+    getMode: () => mode };
 }

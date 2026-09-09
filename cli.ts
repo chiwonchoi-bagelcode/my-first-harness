@@ -7,10 +7,80 @@ import type { Agent, AgentEvent } from "./agent.ts";
 import type { HistorySink } from "./execution-history.ts";
 import type { HarnessPaths } from "./harness-paths.ts";
 import type { ImageBlock } from "./llm-types.ts";
+import type { PermissionRequest, RequestApproval } from "./permissions.ts";
+import { parseMode } from "./agent-mode.ts";
+import { parsePermissionMode } from "./permissions.ts";
+import type { RequestPlanReview } from "./plan-review.ts";
+
+// 계획 전문을 보여주고 y로 승인, 수정 의견으로 재계획, 빈 입력으로 검토를 닫는다.
+export function createCliPlanReview(terminal: ReturnType<typeof createInterface>): RequestPlanReview {
+  let isClosed = false;
+  terminal.once("close", () => { isClosed = true; });
+  return async (plan, signal) => {
+    if (isClosed || signal?.aborted) return { decision: "cancel" };
+    console.log(`[plan review]\n${plan}`);
+    const closed = new AbortController();
+    // EOF에서도 실행 중인 검토를 해소한다.
+    const onClose = () => closed.abort();
+    terminal.once("close", onClose);
+    try {
+      const answer = (await terminal.question("계획 승인: y / 수정 요청: 의견 입력 / 닫기: Enter > ", {
+        signal: signal ? AbortSignal.any([signal, closed.signal]) : closed.signal,
+      })).trim();
+      if (closed.signal.aborted || signal?.aborted || !answer) return { decision: "cancel" };
+      return /^(y|yes)$/i.test(answer) ? { decision: "approve" } : { decision: "revise", feedback: answer };
+    } catch { return { decision: "cancel" }; }
+    finally { terminal.removeListener("close", onClose); }
+  };
+}
+
+// 같은 readline 입력을 사용하되 명시적인 y/yes만 일회 승인으로 처리한다.
+export function createCliApproval(terminal: ReturnType<typeof createInterface>): RequestApproval {
+  let isClosed = false;
+  terminal.once("close", () => { isClosed = true; });
+  return async (request, signal) => {
+    if (signal?.aborted || isClosed) return false;
+    console.log(`[approval] ${JSON.stringify(request.toolName)}\n${JSON.stringify(request.args, null, 2)}`);
+    const closed = new AbortController();
+    // EOF·종료로 입력이 닫히면 승인 질문도 취소한다.
+    const onClose = () => closed.abort();
+    terminal.once("close", onClose);
+    try {
+      const answer = await terminal.question("Y 일회 승인 / S 세션 동안 이 툴의 모든 인자 승인 / N 거부 > ", {
+        signal: signal ? AbortSignal.any([signal, closed.signal]) : closed.signal,
+      });
+      if (signal?.aborted || closed.signal.aborted) return false;
+      if (/^(s|session)$/i.test(answer.trim())) return "session";
+      return /^(y|yes)$/i.test(answer.trim());
+    } catch { return false; }
+    finally { terminal.removeListener("close", onClose); }
+  };
+}
+
+// 에이전트 생성 전 승인 콜백을 제공하고 실행 중인 CLI의 입력 장치에 연결한다.
+export function createCli() {
+  let approve: RequestApproval | undefined;
+  let review: RequestPlanReview | undefined;
+  return {
+    // CLI 입력이 연결된 동안에만 계획 검토를 요청한다.
+    requestPlanReview(plan: string, signal?: AbortSignal) { return review?.(plan, signal) ?? Promise.resolve({ decision: "cancel" } as const); },
+    // CLI가 아직 열리지 않았거나 종료됐으면 승인을 거부한다.
+    requestApproval(request: PermissionRequest, signal?: AbortSignal) { return approve?.(request, signal) ?? Promise.resolve(false); },
+    // 기존 CLI 실행 API는 유지하면서 승인 질문만 연결한다.
+    run(options: CliOptions) { return runCli({ ...options, connectApproval(handler) {
+      approve = handler;
+      return () => { approve = undefined; };
+    }, connectPlanReview(handler) {
+      review = handler;
+      return () => { review = undefined; };
+    } }); },
+  };
+}
 
 // 코어 진행 이벤트를 기존 CLI 출력 형식으로 표시한다.
 export function renderCliEvent(event: AgentEvent) {
   switch (event.type) {
+    case "mode-changed": console.log(`[mode] ${event.mode} · 계획 승인됨`); break;
     case "assistant-text": console.log(event.text); break;
     case "tool-start": console.log(`[tool] ${event.name} ${event.arguments}`); break;
     case "compaction-start": console.log("[context] 대화를 요약합니다..."); break;
@@ -30,6 +100,8 @@ export type CliOptions = {
   dispose: () => Promise<void>;
   saveSession?: typeof persistSession;
   loadSession?: typeof restoreSession;
+  connectApproval?: (handler: RequestApproval) => () => void;
+  connectPlanReview?: (handler: RequestPlanReview) => () => void;
 };
 
 // 사용자 명령·이미지 첨부·터미널 종료를 처리한다. 코어는 입력 장치를 알지 못한다.
@@ -41,6 +113,8 @@ export async function runCli(options: CliOptions) {
   let pendingImages: ImageBlock[] = [];
 
   const terminal = createInterface({ input: process.stdin, output: process.stdout });
+  const disconnectApproval = options.connectApproval?.(createCliApproval(terminal));
+  const disconnectPlanReview = options.connectPlanReview?.(createCliPlanReview(terminal));
   let cleanupPromise: Promise<void> | undefined;
   let interrupted = false;
   // 정상 종료와 중단이 겹쳐도 셸 작업과 MCP 연결을 한 번만 정리하고 실패를 알린다.
@@ -57,6 +131,7 @@ export async function runCli(options: CliOptions) {
   // 터미널 Ctrl+C와 운영체제 SIGINT 모두 같은 정리를 거쳐 종료한다.
   function handleInterrupt() {
     interrupted = true;
+    agent.interrupt();
     terminal.close();
     void cleanupRuntime().catch(console.error).finally(() => process.exit(130));
   }
@@ -76,6 +151,26 @@ export async function runCli(options: CliOptions) {
 
       if (input.trim() === "/quit") {
         break;
+      }
+
+      if (input.trim().split(/\s/, 1)[0] === "/mode") {
+        try {
+          const target = input.trim().slice(5).trim();
+          agent.setMode(target === "yolo" ? "edit" : parseMode(target));
+          agent.setPermissionMode(target === "yolo" ? "yolo" : "default");
+          console.log(`[mode] ${target === "yolo" ? "YOLO · 모든 툴 권한 검사 우회" : agent.getMode()}`);
+        } catch (error) {
+          console.log(error instanceof Error ? error.message : String(error));
+        }
+        continue;
+      }
+
+      if (input.trim().split(/\s/, 1)[0] === "/permissions") {
+        try {
+          agent.setPermissionMode(parsePermissionMode(input.trim().slice("/permissions".length).trim()));
+          console.log(`[permissions] ${agent.getPermissionMode()} · ${agent.getPermissionMode() === "yolo" ? "모든 툴 권한 검사 우회 (plan의 쓰기 차단 포함)" : "정책 및 세션 승인 적용"}`);
+        } catch (error) { console.log(error instanceof Error ? error.message : String(error)); }
+        continue;
       }
 
       if (input.trim() === "/attach" || input.startsWith("/attach ")) {
@@ -137,6 +232,8 @@ export async function runCli(options: CliOptions) {
     // Ctrl+C로 question 또는 실행 중 명령이 취소된 오류는 중단 처리에서 마무리한다.
     if (!interrupted) throw error;
   } finally {
+    disconnectApproval?.();
+    disconnectPlanReview?.();
     terminal.close();
     await cleanupRuntime();
     process.removeListener("SIGINT", handleInterrupt);

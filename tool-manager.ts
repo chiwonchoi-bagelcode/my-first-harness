@@ -1,5 +1,7 @@
 import { validateToolArguments } from "./tool-schema.ts";
 import type { LLMAdapter, ToolContent, ToolDefinition } from "./llm-types.ts";
+import { ALLOW_ALL, checkPermission, waitForApproval } from "./permissions.ts";
+import type { PermissionPolicy, RequestApproval } from "./permissions.ts";
 
 // 모듈이 등록하는 툴의 API 정의와 실행 함수다.
 export type RegisteredTool = ToolDefinition & {
@@ -100,7 +102,8 @@ export class ToolManager {
   }
 
   // 툴과 인자를 검증한 뒤 실행하고, 호출·실행 오류도 결과로 반환한다.
-  async execute(name: string, argumentsJson: string, context?: { llm: LLMAdapter; discoveredTools?: string[]; signal?: AbortSignal }) {
+  async execute(name: string, argumentsJson: string, context?: { llm: LLMAdapter; discoveredTools?: string[]; signal?: AbortSignal;
+    permissions?: PermissionPolicy; requestApproval?: RequestApproval }) {
     context?.signal?.throwIfAborted();
     if (this.disabled.has(name)) return { content: `툴 요청 오류: 비활성화된 툴입니다: ${name}`, isError: true };
     const tool = name === "ToolSearch" && this.mcpTools().length && context?.discoveredTools
@@ -126,6 +129,17 @@ export class ToolManager {
     if (validationError) return { content: validationError, isError: true };
 
     try {
+      const request = { toolName: name, args: arguments_, owner: this.catalog.get(name)?.owner };
+      const decision = checkPermission(context?.permissions ?? ALLOW_ALL, request);
+      if (decision === "deny") return { content: "권한 정책에 의해 툴 실행이 거부됐습니다.", isError: true };
+      if (decision === "ask" && !await waitForApproval(request, context?.requestApproval, context?.signal)) {
+        return { content: "사용자 승인을 받지 못해 툴을 실행하지 않았습니다. 같은 요청을 임의로 우회하지 마세요.", isError: true };
+      }
+      context?.signal?.throwIfAborted();
+      // 승인 대기 중 툴이 꺼지거나 교체됐으면 이전 실행 함수를 호출하지 않는다.
+      if (this.disabled.has(name) || (name !== "ToolSearch" && !this.tools.includes(tool))) {
+        return { content: "승인 대기 중 툴이 비활성화되거나 교체됐습니다.", isError: true };
+      }
       const value = await tool.execute(arguments_, context);
       const content: ToolContent = Array.isArray(value) ? value : String(value);
       return { content };

@@ -36,7 +36,8 @@ function runtimeScript() {
       return 'STARTED';
     }
     await runCli({
-      agent: { turn, compact: compactAndSave }, paths, history,
+      // 이 모의 코어는 취소할 모델 요청이 없고 dispose에서 프로세스를 정리한다.
+      agent: { turn, compact: compactAndSave, interrupt() { return false; } }, paths, history,
       supportsImages: false, saveSession, loadSession,
       dispose: async () => { await shellJobs.dispose(); await closeMcpServers(mcpClients); },
     });

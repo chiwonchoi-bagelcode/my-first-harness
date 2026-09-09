@@ -6,6 +6,7 @@ import { stripVTControlCharacters } from "node:util";
 import { commandSuggestions, createTuiSession } from "./tui-session.ts";
 import type { TuiEntry, TuiOptions, TuiSession } from "./tui-session.ts";
 import type { AgentEvent } from "./agent.ts";
+import type { PermissionRequest } from "./permissions.ts";
 
 // 모델·툴 출력의 터미널 제어문자는 화면에 실행하지 않는다. 원문 기록은 바꾸지 않는다.
 function displayText(text: string) {
@@ -34,6 +35,7 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
   // Ink 7.1.1의 fullscreen 경로는 끝 개행을 생략해 useCursor가 한 줄 어긋나므로 마지막 줄을 비운다.
   const screenRows = Math.max(1, rows - 1);
   const [input, setInput] = useState("");
+  const [planFeedback, setPlanFeedback] = useState("");
   const [selected, setSelected] = useState(0);
   const [menuHidden, setMenuHidden] = useState(false);
   const [inputVersion, setInputVersion] = useState(0);
@@ -43,7 +45,7 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
   const [extensionSelected, setExtensionSelected] = useState(0);
   const picker = state.resumePicker;
   const extensionPicker = state.extensionPicker;
-  const allCandidates = menuHidden || picker || extensionPicker ? [] : commandSuggestions(input, supportsImages);
+  const allCandidates = menuHidden || picker || extensionPicker || state.approval || state.planReview ? [] : commandSuggestions(input, supportsImages);
   const selectedIndex = Math.min(selected, Math.max(0, allCandidates.length - 1));
   // 명령이 늘어나도 작은 터미널에서 입력창이 화면 밖으로 밀리지 않게 한다.
   const candidateCount = Math.max(1, Math.min(allCandidates.length, rows - 13));
@@ -52,7 +54,7 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
   const choice = allCandidates[selectedIndex];
   const menuRows = candidates.length ? candidates.length + 3 : 0;
   const inputWidth = Math.max(2, columns - 6);
-  const inputRows = Math.min(5, Math.max(1, screenRows - menuRows - 10), layoutInput(input, inputWidth).lines.length);
+  const inputRows = Math.min(5, Math.max(1, screenRows - menuRows - 10), layoutInput(state.planReview?.feedback ? planFeedback : input, inputWidth).lines.length);
   const feedRows = Math.max(0, screenRows - menuRows - inputRows - 6);
   const resumeIndex = Math.min(resumeSelected, Math.max(0, (picker?.sessions.length ?? 0) - 1));
   const resumeCount = Math.max(1, feedRows - 4);
@@ -83,6 +85,10 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
 
   // 새 세션에서는 화면 위치를 최신 내용으로 되돌린다.
   useEffect(() => { setScroll(null); }, [state.sessionId]);
+  // 승인 요청이 도착하면 이전 스크롤 위치 대신 새 요청을 보여준다.
+  useEffect(() => { if (state.approval) setScroll(null); }, [state.approval]);
+  // 새 계획은 최신 출력으로 이동하며 이전 검토의 수정 의견을 재사용하지 않는다.
+  useEffect(() => { if (state.planReview) setScroll(null); setPlanFeedback(""); }, [state.planReview?.plan]);
   // 목록을 새로 열면 최신 저장 세션부터 선택한다.
   useEffect(() => { setResumeSelected(0); }, [picker]);
   // 토글 후에는 선택을 유지하고 다른 종류의 목록을 열 때만 처음으로 돌아간다.
@@ -90,12 +96,16 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
   // 명령 선택은 실행하지 않고 입력창에 채우며 새 입력 커서를 끝으로 옮긴다.
   function complete() {
     if (!choice) return;
-    setInput(choice.name + (choice.name === "/attach" || choice.name === "/resume" ? " " : ""));
+    setInput(choice.name + (["/attach", "/resume", "/mode", "/permissions"].includes(choice.name) ? " " : ""));
     setMenuHidden(true);
     setInputVersion((version) => version + 1);
   }
   // 후보가 열려 있으면 선택하고, 닫혀 있으면 현재 입력을 한 번 실행한다.
   function submit(value: string) {
+    if (state.planReview?.feedback) {
+      if (value.trim()) controller.answerPlanReview({ decision: "revise", feedback: value.trim() });
+      return;
+    }
     if (state.busy) return;
     if (choice) { complete(); return; }
     if (!value.trim()) return;
@@ -118,7 +128,14 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
       }
       return;
     }
+    if (state.planReview && key.escape) { controller.answerPlanReview({ decision: "cancel" }); return; }
     if (state.busy && key.escape) { controller.interrupt(); return; }
+    if (key.shift && key.tab) {
+      if (!state.busy && !picker && !extensionPicker) {
+        void controller.submit(`/mode ${state.permissionMode === "yolo" ? "edit" : state.mode === "edit" ? "plan" : "yolo"}`);
+      }
+      return;
+    }
     if (extensionPicker) {
       if (state.busy) return;
       if (key.escape) { controller.dismissExtensionPicker(); return; }
@@ -139,6 +156,19 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
     }
     if (key.pageUp) moveScroll(-feedRows);
     if (key.pageDown) moveScroll(feedRows);
+    if (state.planReview) {
+      if (rows < 16 || columns < 40 || state.planReview.feedback) return;
+      if (!key.ctrl && !key.meta && value.toLowerCase() === "y") controller.answerPlanReview({ decision: "approve" });
+      else if (value.toLowerCase() === "n") controller.beginPlanFeedback();
+      return;
+    }
+    if (state.approval) {
+      if (rows < 16 || columns < 40) return;
+      if (!key.ctrl && !key.meta && value.toLowerCase() === "y") controller.answerApproval(true);
+      else if (!key.ctrl && !key.meta && value.toLowerCase() === "s") controller.answerApproval("session");
+      else if (value.toLowerCase() === "n" || key.return) controller.answerApproval(false);
+      return;
+    }
     if (state.busy) return;
     if (key.escape) setMenuHidden(true);
     if (choice && key.upArrow) setSelected((selectedIndex + allCandidates.length - 1) % allCandidates.length);
@@ -151,7 +181,7 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
   }
 
   return h(Box, { flexDirection: "column", width: columns, height: screenRows },
-    h(Text, { bold: true, color: "cyan", wrap: "truncate-end" }, `My First Harness · ${model} · ${state.sessionId}`),
+    h(Text, { bold: true, color: state.permissionMode === "yolo" ? "red" : "cyan", wrap: "truncate-end" }, `My First Harness · ${model} · [${state.mode}]${state.permissionMode === "yolo" ? " [YOLO]" : ""} · ${state.sessionId}`),
     h(Text, { dimColor: true }, "─".repeat(Math.max(1, columns))),
     extensionPicker ? h(Box, { flexDirection: "column", height: feedRows, flexShrink: 0, overflow: "hidden" },
       h(Text, { bold: true, color: "cyan", wrap: "truncate-end" }, `${extensionPicker.kind} · 프로젝트 설정 · 다음 요청부터 반영`),
@@ -188,12 +218,12 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
       h(Text, { dimColor: true, wrap: "truncate-end" }, "입력창에 채운 후 Enter를 다시 누르면 실행합니다.")) : null,
     h(Box, { borderStyle: "round", borderColor: state.busy || picker || extensionPicker ? "gray" : "cyan", height: inputRows + 2, flexShrink: 0, overflow: "hidden" },
       h(Text, { color: "cyan" }, "> "),
-      h(TuiInput, { key: inputVersion, value: input, width: inputWidth, height: inputRows,
-        cursorStart: { x: 3, y: 3 + feedRows + menuRows }, focus: !state.busy && !picker && !extensionPicker, menuOpen: Boolean(choice),
-        placeholder: extensionPicker ? "Space/Enter 토글 · Esc 닫기" : picker ? "목록에서 세션을 선택하세요." : state.busy ? "실행 중 · 새 요청은 완료 후 입력" : "메시지 또는 /명령",
-        onChange(value) { setInput(value); setSelected(0); setMenuHidden(false); }, onSubmit: submit })),
+      h(TuiInput, { key: `${inputVersion}-${Boolean(state.planReview?.feedback)}`, value: state.planReview?.feedback ? planFeedback : input, width: inputWidth, height: inputRows,
+        cursorStart: { x: 3, y: 3 + feedRows + menuRows }, focus: Boolean(state.planReview?.feedback) || (!state.busy && !picker && !extensionPicker), menuOpen: Boolean(choice),
+        placeholder: state.planReview ? (state.planReview.feedback ? "수정 의견 입력 · Enter 제출 · Esc 취소" : "Y 계획 승인 · N 수정 의견 · Esc 취소 · PgUp/PgDn 검토") : state.approval ? "Y 일회 · S 세션(모든 인자) · N/Enter 거부" : extensionPicker ? "Space/Enter 토글 · Esc 닫기" : picker ? "목록에서 세션을 선택하세요." : state.busy ? "실행 중 · 새 요청은 완료 후 입력" : "메시지 또는 /명령",
+        onChange(value) { if (state.planReview?.feedback) setPlanFeedback(value); else { setInput(value); setSelected(0); setMenuHidden(false); } }, onSubmit: submit })),
     h(Text, { color: state.busy ? "yellow" : "green", wrap: "truncate-end" }, `상태: ${state.status}${state.pendingImages ? ` · 첨부 ${state.pendingImages}개` : ""}`),
-    h(Text, { dimColor: true, wrap: "truncate-end" }, `${offset ? "이전 내용 · " : ""}휠/PgUp/PgDn 스크롤 · Esc 턴 중단 · Enter 전송 · / 명령 · Ctrl+C 종료`),
+    h(Text, { dimColor: true, wrap: "truncate-end" }, `${offset ? "이전 내용 · " : ""}Shift+Tab 모드 · 휠/PgUp/PgDn 스크롤 · Esc 턴 중단 · Enter 전송 · / 명령 · Ctrl+C 종료`),
   );
 }
 
@@ -201,8 +231,12 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
 export function createTui() {
   let controller: TuiSession | undefined;
   return {
+    // 화면에 계획 전문을 제시하고 승인 또는 수정 의견을 받는다.
+    requestPlanReview(plan: string, signal?: AbortSignal) { return controller?.requestPlanReview(plan, signal) ?? Promise.resolve({ decision: "cancel" } as const); },
     // createAgent의 onEvent에 그대로 연결한다.
     onEvent(event: AgentEvent) { controller?.onEvent(event); },
+    // 화면이 실행 중일 때만 승인 요청을 전달한다.
+    requestApproval(request: PermissionRequest, signal?: AbortSignal) { return controller?.requestApproval(request, signal) ?? Promise.resolve(false); },
     // 종료 시 원래 터미널 화면을 복원하고 기존 CLI와 같은 자원 정리를 수행한다.
     async run(options: TuiOptions) {
       if (!process.stdin.isTTY || !process.stdout.isTTY) {

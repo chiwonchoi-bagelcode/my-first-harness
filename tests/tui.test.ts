@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { modeFixture } from "./mode-fixture.ts";
 import { mkdtemp, rm, writeFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,6 +31,7 @@ function fixture(overrides: Partial<TuiOptions> = {}) {
   const controller = createTuiSession({
     model: "test", paths: createHarnessPaths("/test", "/test-home"), supportsImages: true,
     agent: {
+      ...modeFixture(),
       // 기본 대체 코어에는 진행 중인 작업이 없다.
       interrupt() { return false; },
       // 모델 실행 대신 입력과 첨부 개수를 확인한다.
@@ -58,6 +60,52 @@ function fixture(overrides: Partial<TuiOptions> = {}) {
 
 // React 상태 반영과 Ink 프레임 출력이 끝날 때까지 기다린다.
 async function settle() { await new Promise((resolve) => setTimeout(resolve, 60)); }
+
+test("Shift+Tab은 edit → plan → YOLO → edit를 순환하고 S는 세션 승인이다", async (t) => {
+  const { controller } = fixture();
+  const view = render(h(TuiScreen, { controller, model: "test", onQuit() {} }));
+  t.after(() => { view.unmount(); view.cleanup(); });
+  await settle();
+  for (const [mode, permission] of [["plan", "default"], ["edit", "yolo"], ["edit", "default"]] as const) {
+    view.stdin.write("\x1b[Z"); await settle();
+    assert.equal(controller.getSnapshot().mode, mode);
+    assert.equal(controller.getSnapshot().permissionMode, permission);
+    if (permission === "yolo") assert.match(view.lastFrame()!, /\[YOLO\]/);
+    else assert.doesNotMatch(view.lastFrame()!.split("\n")[0], /YOLO/);
+  }
+  const approval = controller.requestApproval({ toolName: "runCommand", args: {} });
+  await settle();
+  view.stdin.write("s");
+  assert.equal(await approval, "session");
+  await controller.close();
+});
+
+test("모드 명령과 Shift+Tab이 연결되고 입력 초안과 세션 전환에서 모드를 유지한다", async (t) => {
+  const { controller, calls } = fixture();
+  const view = render(h(TuiScreen, { controller, model: "test", onQuit() {} }));
+  t.after(() => { view.unmount(); view.cleanup(); });
+  await settle();
+  assert.match(view.lastFrame()!, /\[edit\]/);
+  view.stdin.write("/mo"); await settle();
+  view.stdin.write("\x1b[Z"); await settle();
+  assert.equal(controller.getSnapshot().mode, "plan");
+  assert.match(view.lastFrame()!, /\[plan\]/);
+  assert.match(view.lastFrame()!, /> \/mo/);
+  assert.equal(calls.length, 0);
+  await controller.submit("/mode wrong");
+  assert.equal(controller.getSnapshot().mode, "plan");
+  await controller.submit("/new");
+  assert.equal(controller.getSnapshot().mode, "plan");
+  await controller.submit("/mode edit");
+  assert.equal(controller.getSnapshot().mode, "edit");
+  const pending = controller.requestApproval({ toolName: "runCommand", args: {} });
+  await settle();
+  view.stdin.write("\x1b[Z"); await settle();
+  assert.equal(controller.getSnapshot().mode, "edit");
+  controller.answerApproval(false);
+  await pending;
+  await controller.close();
+});
 
 test("휠·트랙패드 보고는 대화만 스크롤하고 새 출력에도 읽는 위치를 유지한다", async (t) => {
   const { controller } = fixture();
@@ -96,6 +144,7 @@ test("Esc는 턴 중단만 요청하고 완료 전 입력 잠금을 유지하며
   let requests = 0;
   let turns = 0;
   const { controller } = fixture({ agent: {
+    ...modeFixture(),
     // 완료 시점은 테스트가 결정해 요청과 완료가 구분되는지 확인한다.
     interrupt() { requests++; return requests === 1; },
     async turn() { return ++turns === 1 ? pending.promise : "다음 답변"; },
@@ -190,7 +239,7 @@ test("확장 변경 중 중복 토글과 모델 실행을 막고 연결 실패�
 });
 
 test("명령 후보는 접두사·이미지 지원 여부에 맞고 인자 입력 중에는 닫힌다", () => {
-  assert.deepEqual(commandSuggestions("/", true).map((entry) => entry.name), ["/new", "/resume", "/compact", "/attach", "/skills", "/tools", "/plugins", "/mcp", "/reload-skills", "/reload-instructions", "/quit"]);
+  assert.deepEqual(commandSuggestions("/", true).map((entry) => entry.name), ["/new", "/resume", "/compact", "/attach", "/skills", "/tools", "/plugins", "/mcp", "/reload-skills", "/reload-instructions", "/mode", "/permissions", "/quit"]);
   assert.deepEqual(commandSuggestions("/r", true).map((entry) => entry.usage), ["/resume [session-id]", "/reload-skills", "/reload-instructions"]);
   assert.equal(commandSuggestions("/", false).some((entry) => entry.name === "/attach"), false);
   for (const value of ["hello", "/unknown", "/attach ", "/resume abc"]) assert.deepEqual(commandSuggestions(value, true), []);
@@ -231,6 +280,7 @@ test("한글 입력과 진행 출력이 보이며 실행 중에는 요청을 중
   const pending = Promise.withResolvers<string>();
   let invoked = 0;
   const { controller } = fixture({ agent: {
+    ...modeFixture(),
     // 이 테스트는 입력 잠금만 검사한다.
     interrupt() { return false; },
     async turn() { invoked++; return pending.promise; }, async compact() {},
@@ -357,6 +407,7 @@ test("PageUp/Down으로 긴 대화를 보고 Escape로 후보만 닫는다", asy
 test("실행 실패 후 새 일반 요청은 막고 새 세션에서 다시 실행할 수 있다", async () => {
   let attempts = 0;
   const { controller } = fixture({ agent: {
+    ...modeFixture(),
     // 실패한 모의 턴은 이미 종료되었다.
     interrupt() { return false; },
     async turn() { if (++attempts === 1) throw new Error("모의 요청 실패"); return "완료"; },

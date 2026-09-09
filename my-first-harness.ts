@@ -9,8 +9,9 @@ import { createModelAdapter } from "./model-config.ts";
 import { ExecutionHistory } from "./execution-history.ts";
 import { ToolManager } from "./tool-manager.ts";
 import { createAgent } from "./agent.ts";
-import { renderCliEvent, runCli } from "./cli.ts";
+import { renderCliEvent, createCli } from "./cli.ts";
 import { loadEnvironment } from "./environment.ts";
+import { INTERACTIVE_PERMISSIONS } from "./permissions.ts";
 
 const paths = createHarnessPaths();
 loadEnvironment(paths);
@@ -23,6 +24,7 @@ const history = new ExecutionHistory(paths,
 
 // 기본 CLI는 유지하며 --tui일 때만 화면 라이브러리를 로드한다.
 const tui = process.argv.includes("--tui") ? (await import("./tui.ts")).createTui() : undefined;
+const cli = tui ? undefined : createCli();
 
 const toolManager = new ToolManager();
 const skillManager = new SkillManager();
@@ -39,7 +41,10 @@ for (const server of extensions.list("mcp")) {
 }
 
 const agent = createAgent({
+  permissions: INTERACTIVE_PERMISSIONS,
   adapter, toolManager, skillManager, history, paths, onEvent: tui?.onEvent ?? renderCliEvent,
+  requestApproval: (request, signal) => (tui ?? cli!).requestApproval(request, signal),
+  requestPlanReview: (plan, signal) => (tui ?? cli!).requestPlanReview(plan, signal),
 });
 
 const interfaceOptions = {
@@ -50,4 +55,4 @@ const interfaceOptions = {
   },
 };
 if (tui) await tui.run({ ...interfaceOptions, model: modelChoice });
-else await runCli(interfaceOptions);
+else await cli!.run(interfaceOptions);

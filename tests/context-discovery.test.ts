@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { modeFixture } from "./mode-fixture.ts";
 import test from "node:test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -68,7 +69,7 @@ test("TUI 명시적 갱신은 다음 요청부터 적용하고 삭제된 파일�
   await writeFile(file, "old");
   const seen: string[] = [];
   const ui = createTuiSession({ paths: createHarnessPaths(root, root), history, model: "test",
-    agent: { interrupt() { return false; }, async turn(session) { seen.push(session.projectInstructions); return "ok"; }, async compact() {} },
+    agent: { ...modeFixture(), interrupt() { return false; }, async turn(session) { seen.push(session.projectInstructions); return "ok"; }, async compact() {} },
     async saveSession() {}, async dispose() {},
   });
   await ui.start();
@@ -100,7 +101,7 @@ test("ToolSearch가 실행 없이 MCP를 세션에 공개하고 다음 step에�
   const agent = createAgent({ adapter, toolManager: tools, skillManager: new SkillManager(), history,
     paths: createHarnessPaths("/nonexistent-test-workspace", "/test-home"), async saveSession() {} });
   await agent.turn(session, "화면 확인");
-  assert.deepEqual(requests[0].tools.map((tool) => tool.name), ["readTextFile", "ToolSearch"].sort((a, b) => a.localeCompare(b)));
+  assert.deepEqual(requests[0].tools.map((tool) => tool.name), ["exit_plan_mode", "readTextFile", "ToolSearch"].sort((a, b) => a.localeCompare(b)));
   assert.ok(requests[1].tools.some((tool) => tool.name === "browser_screenshot"));
   assert.equal(executed, 1);
   assert.deepEqual(session.discoveredTools, ["browser_screenshot"]);
