@@ -209,16 +209,17 @@ test("JPEG·WebP도 JSON 왕복 후 Responses·Anthropic의 첨부와 툴 결과
   }
 });
 
-test("이미지는 문자열 자르기·문자 수 계산에서 보호되고 처음 보기 전에는 자동 압축하지 않는다", () => {
+test("이미지 바이트는 문자 수에서 제외하지만 요청 예산에는 시각 가중치로 반영한다", () => {
   const session = { messages: messages() };
   const original = structuredClone(session.messages);
   const before = contextSize(session);
   const enlarged = structuredClone(session);
   for (const block of imagesOf(enlarged.messages)) block.data += "A".repeat(100_000);
   assert.equal(contextSize(enlarged), before);
-  assert.equal(shouldCompact(session, 0), false);
+  const budget = { contextWindow: 100, reservedOutputTokens: 0, safetyMarginTokens: 0, retainRatio: 0 };
+  assert.equal(shouldCompact({ ...session, system: "", tools: [] }, budget), true);
   session.messages.push({ role: "assistant", content: [{ type: "text", text: "확인했다" }] });
-  assert.equal(shouldCompact(session, 0), true);
+  assert.equal(shouldCompact({ ...session, system: "", tools: [] }, budget), true);
   const tool = session.messages[2];
   assert.ok(tool.role === "tool" && Array.isArray(tool.content[0].content));
   tool.content[0].content.unshift({ type: "text", text: "x".repeat(9000) });

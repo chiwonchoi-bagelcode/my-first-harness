@@ -11,6 +11,7 @@ export function recordLLM(
 ): LLMAdapter {
   return {
     supportsImages: adapter.supportsImages,
+    contextBudget: adapter.contextBudget,
     // 호출별 ID로 실제 전송·수신·실패를 연결하며 재시도 정책은 변경하지 않는다.
     async generate(request) {
       const callId = randomUUID();

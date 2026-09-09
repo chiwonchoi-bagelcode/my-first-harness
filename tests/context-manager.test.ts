@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { compactSession, contextSize, pruneToolResults, recordMessage, shouldCompact } from "../context-manager.ts";
+import { compactSession, contextSize, pruneToolResults, recordMessage, shouldCompact as requestNeedsCompaction } from "../context-manager.ts";
+import { estimateRequestTokens } from "../token-budget.ts";
 import { createHarnessPaths } from "../harness-paths.ts";
 import { loadSession, saveSession } from "../session-store.ts";
 import type { Session } from "../session.ts";
@@ -12,6 +13,12 @@ import { textOf } from "../llm-types.ts";
 
 // 테스트에서 사용할 공통 사용자 메시지를 만든다.
 const user = (text: string): Message => ({ role: "user", content: [{ type: "text", text }] });
+// 작은 테스트 예산으로 요청 전체의 임계치와 정리 동작을 검증한다.
+function shouldCompact(session: { messages: Message[]; system?: string }, threshold = 15_000) {
+  return requestNeedsCompaction({ system: session.system ?? "", tools: [], messages: session.messages }, {
+    contextWindow: threshold + 1, reservedOutputTokens: 0, safetyMarginTokens: 1, retainRatio: 0,
+  });
+}
 // 테스트에서 사용할 호출 ID와 결과를 가진 공통 툴 메시지를 만든다.
 const tool = (content: string, id = "call-1"): Message => ({
   role: "tool", content: [{ type: "tool-result", toolCallId: id, content }],
@@ -45,7 +52,7 @@ test("새 메시지는 요청용 대화에 추가하고 압축은 원본 객체�
 
 test("첫 사용자 메시지도 임계치 계산에 포함한다", () => {
   const session = createSession();
-  const size = contextSize(session);
+  const size = estimateRequestTokens({ ...session, tools: [] });
   assert.equal(shouldCompact(session, size + 1), false);
   assert.equal(shouldCompact(session, size), true);
   assert.equal(shouldCompact(session), false);
@@ -98,7 +105,7 @@ test("한 응답의 모든 툴 결과를 받기 전에는 요약하지 않는다
 
 test("빈 대화에서는 요약 API를 호출하지 않는다", async () => {
   const session = { messages: [] };
-  assert.equal(shouldCompact(session, 0), false);
+  assert.equal(shouldCompact(session), false);
   assert.equal(await compactSession(session, async () => { throw new Error("호출되면 안 됨"); }), false);
 });
 
@@ -205,7 +212,7 @@ test("재전송 정보는 요약 입력과 문자 수에서 제외하고 압축�
   const size = contextSize(session);
   message.replayState = { adapter: "test", provider: "test", model: "test", data: "x".repeat(70_000) };
   assert.equal(contextSize(session), size);
-  assert.equal(shouldCompact(session), false);
+  assert.equal(shouldCompact(session), true);
   await compactSession(session, async (messages) => {
     assert.doesNotMatch(JSON.stringify(messages), /replayState/);
     return "요약";

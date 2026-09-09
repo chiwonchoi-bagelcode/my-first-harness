@@ -23,7 +23,7 @@ function fixture(adapter: LLMAdapter, overrides: Partial<AgentOptions> = {}) {
   const saved: Session[] = [];
   const records: (HistoryEvent & HistoryScope)[] = [];
   const agent = createAgent({
-    adapter,
+    adapter: { contextBudget: { contextWindow: 20_000, reservedOutputTokens: 1000, safetyMarginTokens: 4000, retainRatio: 0 }, ...adapter },
     paths: createHarnessPaths("/test", "/test-home"),
     toolManager: new ToolManager(),
     skillManager: new SkillManager(),
@@ -136,7 +136,49 @@ test("CLI는 모든 코어 이벤트를 기존 화면 문구로 표시한다", (
   ];
   events.forEach(renderCliEvent);
   assert.deepEqual(lines, ["확인 중", "[tool] read {}", "[context] 대화를 요약합니다...",
-    "[context] 압축 완료: 70000 → 1000자", "[context] 요약할 대화가 없습니다.",
+    "[context] 압축 완료: 70000 → 1000자", "[context] 최근 기록을 보존하면 요약할 오래된 구간이 없습니다.",
     "[recovery] 출력 한도 도달 · 작업을 나눠 다시 요청합니다 (1/2)",
     "[context] 툴 결과 2개 정리: 80000 → 5000자"]);
+});
+
+test("자동 압축 후에도 최근 요청과 원본 이력은 유지되고 실제 스텝은 새 컨텍스트를 받는다", async () => {
+  let calls = 0;
+  const { agent, records } = fixture({
+    contextBudget: { contextWindow: 2000, reservedOutputTokens: 100, safetyMarginTokens: 200, retainRatio: 0.1 },
+    // 첫 호출만 요약하고 두 번째 호출에서 최신 사용자 지시의 원문을 확인한다.
+    async generate(request) {
+      calls++;
+      if (calls === 1) return reply("과거 작업은 완료. 현재는 사용자의 테스트 요청을 따를 것.");
+      assert.equal(request.messages.length, 3);
+      assert.deepEqual(request.messages.at(-1)?.content, [{ type: "text", text: "구현하지 말고 테스트만 해줘" }]);
+      assert.ok(request.system.includes("현재 작업 디렉토리"));
+      return reply("테스트 완료");
+    },
+  });
+  const session = createSession("/test");
+  session.messages.push({ role: "user", content: [{ type: "text", text: "old ".repeat(3000) }] },
+    { role: "assistant", content: [{ type: "text", text: "최근 진행 상황 ".repeat(50) }] });
+  await agent.turn(session, "구현하지 말고 테스트만 해줘");
+  assert.equal(calls, 2);
+  assert.deepEqual(records.filter((event) => event.type === "model-start").map((event) => event.purpose), ["compaction", "step"]);
+  assert.ok(records.some((event) => event.type === "message" && event.message.role === "user"));
+});
+
+test("거대한 최신 입력 또는 고정 시스템만으로 예산을 넘으면 요약 무한 반복 없이 종료한다", async () => {
+  for (const mode of ["input", "system"]) {
+    let calls = 0;
+    const { agent } = fixture({
+      contextBudget: { contextWindow: 1000, reservedOutputTokens: 100, safetyMarginTokens: 100, retainRatio: 0.1 },
+      // 오래된 기록 한 번의 요약 외에는 모델 호출을 허용하지 않는다.
+      async generate() { calls++; return reply("짧은 요약"); },
+    });
+    const session = createSession("/test");
+    if (mode === "system") {
+      session.system = "x".repeat(10_000);
+      session.messages.push({ role: "user", content: [{ type: "text", text: "old ".repeat(1000) }] },
+        { role: "assistant", content: [{ type: "text", text: "recent ".repeat(100) }] });
+    }
+    await assert.rejects(agent.turn(session, mode === "input" ? "x".repeat(10_000) : "계속"), /예산을 초과/);
+    assert.equal(calls, mode === "input" ? 0 : 1);
+  }
 });

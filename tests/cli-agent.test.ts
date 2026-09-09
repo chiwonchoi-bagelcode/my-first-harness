@@ -72,11 +72,10 @@ test("CLI와 실제 코어를 연결해 진행 출력·최종 답변·compact·r
   const before = await snapshot();
   assert.equal(before.version, 2);
   assert.equal(before.messages.length, 4);
-  assert.match(await send("/compact"), /대화를 요약합니다[\s\S]*압축 완료/);
+  assert.match(await send("/compact"), /대화를 요약합니다[\s\S]*요약할/);
   const after = await snapshot();
   assert.equal(after.system, before.system);
-  assert.equal(after.messages.length, 1);
-  assert.match(after.messages[0].content[0].text, /값 42 확인 완료/);
+  assert.deepEqual(after.messages, before.messages);
   await send("/new");
   assert.match(await send(`/resume ${id}`), /resumed session/);
   assert.deepEqual(await snapshot(), after);
@@ -88,5 +87,5 @@ test("CLI와 실제 코어를 연결해 진행 출력·최종 답변·compact·r
   assert.equal(records.at(-1).type, "session-close");
   assert.equal(records.filter((event) => event.type === "turn-end").length, 1);
   assert.equal(records.filter((event) => event.type === "tool-end").length, 1);
-  assert.deepEqual(records.filter((event) => event.type === "model-start").map((event) => event.purpose), ["step", "step", "compaction"]);
+  assert.deepEqual(records.filter((event) => event.type === "model-start").map((event) => event.purpose), ["step", "step"]);
 });

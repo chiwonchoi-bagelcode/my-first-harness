@@ -5,6 +5,7 @@ import { textOf } from "./llm-types.ts";
 import { checkImageInput } from "./image-content.ts";
 import { saveSession as persistSession } from "./session-store.ts";
 import { compactSession, contextSize, pruneToolResults, recordMessage, shouldCompact } from "./context-manager.ts";
+import { DEFAULT_CONTEXT_BUDGET, compactionThreshold, estimateRequestTokens, retentionTokens } from "./token-budget.ts";
 import type { HistoryScope, HistorySink } from "./execution-history.ts";
 import type { ImageBlock, LLMAdapter, LLMRequest, Message } from "./llm-types.ts";
 import type { HarnessPaths } from "./harness-paths.ts";
@@ -44,6 +45,8 @@ export interface Agent {
 // 터미널·모델 연결·툴 등록을 시작하지 않고 전달받은 구성으로 실행 함수를 만든다.
 export function createAgent(options: AgentOptions): Agent {
   const { adapter, toolManager, skillManager, history, paths, onEvent, saveSession = persistSession } = options;
+  const budget = adapter.contextBudget ?? DEFAULT_CONTEXT_BUDGET;
+  compactionThreshold(budget);
 
   // 시스템 지침·스킬·작업 폴더와 현재 대화·툴 정의를 공통 요청으로 조립한다.
   function assembleContext(session: Session): LLMRequest {
@@ -65,7 +68,7 @@ export function createAgent(options: AgentOptions): Agent {
     const before = contextSize(session);
     onEvent?.({ type: "compaction-start" });
     const compacted = await compactSession(session, (conversation) =>
-      summarize(recordLLM(adapter, history, scope, "compaction"), conversation),
+      summarize(recordLLM(adapter, history, scope, "compaction"), conversation), retentionTokens(budget),
     );
     if (compacted) {
       await history.append(scope, { type: "context-update", reason: "compact", beforeChars: before,
@@ -86,7 +89,7 @@ export function createAgent(options: AgentOptions): Agent {
   // 필요하면 컨텍스트를 줄이고 모델을 한 번 호출해 응답을 기록한다.
   async function step(session: Session, scope: HistoryScope) {
     // turn()이 이전 step의 모든 툴 결과를 기록한 뒤 여기로 돌아온다.
-    if (shouldCompact(session)) {
+    if (shouldCompact(assembleContext(session), budget)) {
       const before = contextSize(session);
       const pruned = pruneToolResults(session);
       if (pruned > 0) {
@@ -95,7 +98,12 @@ export function createAgent(options: AgentOptions): Agent {
         await saveSession(session, paths);
         onEvent?.({ type: "tool-results-pruned", count: pruned, beforeChars: before, afterChars: contextSize(session) });
       }
-      if (shouldCompact(session)) await compactAndSave(session, scope);
+      if (shouldCompact(assembleContext(session), budget)) await compactAndSave(session, scope);
+      // 고정 지침·툴 또는 보존할 최근 기록만으로 가득 찬 경우 요약을 반복하지 않는다.
+      const measured = assembleContext(session);
+      if (shouldCompact(measured, budget)) {
+        throw new Error(`컨텍스트가 압축 후에도 예산을 초과합니다 (추정 ${estimateRequestTokens(measured)} / ${compactionThreshold(budget)} 토큰). 툴·스킬 또는 입력 크기를 줄여주세요.`);
+      }
     }
     const context = assembleContext(session);
     const result = await recordLLM(adapter, history, scope, "step").generate(context);

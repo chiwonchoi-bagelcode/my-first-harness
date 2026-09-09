@@ -38,7 +38,8 @@ function harness(adapter: LLMAdapter) {
   const toolManager = new ToolManager();
   const skillManager = new SkillManager();
   const agent = createAgent({
-    adapter, toolManager, skillManager, history, paths,
+    adapter: { contextBudget: { contextWindow: 20_000, reservedOutputTokens: 1000, safetyMarginTokens: 4000, retainRatio: 0 }, ...adapter },
+    toolManager, skillManager, history, paths,
     // 화면 이벤트를 구조 그대로 수집해 CLI 문구와 독립적으로 검증한다.
     onEvent: (event) => { events.push(event); },
     // 실제 사용자 폴더 대신 저장 요청 시점의 스냅샷을 보관한다.
@@ -465,7 +466,7 @@ test("출력 한도 피드백으로 작은 작업을 재요청하고 잘린 인�
     provider: "test", model: "claude-haiku-4-5-20251001", baseURL: "https://example.invalid/v1", apiKey: "test", maxOutputTokens: 32_000,
   }));
   let count = 0;
-  runtime.toolManager.register({ name: "increase", parameters: {}, execute: () => ++count });
+  runtime.toolManager.register({ name: "increase", description: "카운터 증가", parameters: {}, execute: () => ++count });
   const session = runtime.createSession();
   assert.equal(await runtime.turn(session, "두 번 증가"), "완료");
   assert.equal(count, 2);
@@ -512,7 +513,7 @@ test("성공한 툴 스텝이 사이에 있어도 한 턴의 출력 한도 복�
       { type: "tool-call", id: `call-${calls}`, name: "probe", arguments: "{}" },
     ] } };
   } });
-  runtime.toolManager.register({ name: "probe", parameters: {}, execute: () => ++executed });
+  runtime.toolManager.register({ name: "probe", description: "실행 횟수 확인", parameters: {}, execute: () => ++executed });
   const session = runtime.createSession();
   await assert.rejects(runtime.turn(session, "작업"), /복구 2회 소진/);
   assert.equal(calls, 5);

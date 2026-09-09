@@ -118,6 +118,8 @@ export type LLMResult = {
 
 // 각 API 어댑터가 공통 요청과 결과를 주고받기 위해 지킬 계약.
 export interface LLMAdapter {
+  // 제공자별 한도 또는 명시적으로 선택한 운영 예산을 코어에 전달한다.
+  contextBudget?: import("./token-budget.ts").ContextBudget;
   // 선택한 모델·연결에서 이미지 전송을 허용할지 명시한다. 미지정은 비활성화다.
   supportsImages?: boolean;
   // 공통 요청을 받아 모델을 한 번 호출하고 공통 결과로 반환한다.
