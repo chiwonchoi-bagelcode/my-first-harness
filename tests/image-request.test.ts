@@ -67,7 +67,7 @@ test("원본 보관은 중복·동시 쓰기를 처리하고 원래 파일 변�
   assert.equal(first.storedPath, second.storedPath);
   assert.equal((await readdir(join(paths.sessionDirectory, "attachments"))).length, 1);
   await writeFile(source, "changed");
-  await saveSession({ id: "image-review", workspaceDirectory: root, system: "test", messages: archived }, paths);
+  await saveSession({ id: "image-review", workspaceDirectory: root, system: "test", projectInstructions: "", discoveredTools: [], messages: archived }, paths);
   const resumed = await loadSession("image-review", paths);
   const preserved = imagesOf(resumed.messages)[0];
   assert.deepEqual(await readFile(preserved.storedPath!), solidPng());

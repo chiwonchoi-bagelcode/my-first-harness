@@ -253,7 +253,7 @@ test("요약 요청은 JSON의 이미지 번호와 실제 이미지 블록을 �
 test("세션 저장·resume는 이미지 바이트를 보존하며 원본 파일에 다시 의존하지 않는다", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "harness-image-resume-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const session = { id: "image-test", workspaceDirectory: directory, system: "지침", messages: messages() };
+  const session = { id: "image-test", workspaceDirectory: directory, system: "지침", projectInstructions: "", discoveredTools: [], messages: messages() };
   const paths = createHarnessPaths(directory, directory);
   await saveSession(session, paths);
   assert.deepEqual(await loadSession(session.id, paths), session);

@@ -64,6 +64,7 @@ export class ToolManager {
 
   // 처음에는 MCP 이름만 알려 전체 설명·인자 규격이 컨텍스트를 차지하지 않게 한다.
   getSearchInstructions() {
+    if (this.disabled.has("ToolSearch")) return "";
     const names = this.mcpTools().map((tool) => tool.name).sort();
     return names.length ? `Connected MCP tools (names only): ${names.join(", ")}\nUse ToolSearch to load their definitions before calling them.` : "";
   }

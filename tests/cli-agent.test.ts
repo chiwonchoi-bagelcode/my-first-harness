@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -70,15 +70,19 @@ test("CLI와 실제 코어를 연결해 진행 출력·최종 답변·compact·r
   // 실제 JSON 스냅샷에서 턴 완료와 압축 후 저장 상태를 읽는다.
   const snapshot = async () => JSON.parse(await readFile(join(paths.sessionDirectory, `${id}.json`), "utf8"));
   const before = await snapshot();
-  assert.equal(before.version, 2);
+  assert.equal(before.version, 3);
   assert.equal(before.messages.length, 4);
   assert.match(await send("/compact"), /대화를 요약합니다[\s\S]*요약할/);
   const after = await snapshot();
   assert.equal(after.system, before.system);
   assert.deepEqual(after.messages, before.messages);
+  await writeFile(join(directory, "AGENTS.md"), "CLI_PROJECT_RULE");
+  assert.match(await send("/reload-instructions"), /AGENTS.md를 다시 읽었습니다/);
+  const reloaded = await snapshot();
+  assert.equal(reloaded.projectInstructions, "CLI_PROJECT_RULE");
   await send("/new");
   assert.match(await send(`/resume ${id}`), /resumed session/);
-  assert.deepEqual(await snapshot(), after);
+  assert.deepEqual(await snapshot(), reloaded);
   child.stdin.write("/quit\n");
   assert.equal((await closed)[0], 0, errors);
   assert.equal(output.split("[disposed]").length - 1, 1);

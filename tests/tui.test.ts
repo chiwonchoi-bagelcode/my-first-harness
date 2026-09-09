@@ -131,8 +131,8 @@ test("확장 변경 중 중복 토글과 모델 실행을 막고 연결 실패�
 });
 
 test("명령 후보는 접두사·이미지 지원 여부에 맞고 인자 입력 중에는 닫힌다", () => {
-  assert.deepEqual(commandSuggestions("/", true).map((entry) => entry.name), ["/new", "/resume", "/compact", "/attach", "/skills", "/tools", "/plugins", "/mcp", "/reload-skills", "/quit"]);
-  assert.deepEqual(commandSuggestions("/r", true).map((entry) => entry.usage), ["/resume [session-id]", "/reload-skills"]);
+  assert.deepEqual(commandSuggestions("/", true).map((entry) => entry.name), ["/new", "/resume", "/compact", "/attach", "/skills", "/tools", "/plugins", "/mcp", "/reload-skills", "/reload-instructions", "/quit"]);
+  assert.deepEqual(commandSuggestions("/r", true).map((entry) => entry.usage), ["/resume [session-id]", "/reload-skills", "/reload-instructions"]);
   assert.equal(commandSuggestions("/", false).some((entry) => entry.name === "/attach"), false);
   for (const value of ["hello", "/unknown", "/attach ", "/resume abc"]) assert.deepEqual(commandSuggestions(value, true), []);
 });

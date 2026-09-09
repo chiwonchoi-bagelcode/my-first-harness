@@ -71,7 +71,7 @@ test("실제 CLI의 new/resume/quit는 세션별 JSONL에 추가하고 JSON 스�
   assert.equal(secondLog[1].input, `/resume ${first}`);
   assert.ok(firstLog.every((event) => event.sessionId === first));
   const snapshot = JSON.parse(await readFile(join(paths.sessionDirectory, `${first}.json`), "utf8"));
-  assert.equal(snapshot.version, 2);
+  assert.equal(snapshot.version, 3);
   assert.deepEqual(snapshot.messages, []);
   assert.equal("history" in snapshot, false);
 });
