@@ -3,7 +3,7 @@ import type { LLMAdapter, ToolContent, ToolDefinition } from "./llm-types.ts";
 
 // 모듈이 등록하는 툴의 API 정의와 실행 함수다.
 export type RegisteredTool = ToolDefinition & {
-  execute: (args: any, context?: { llm: LLMAdapter }) => unknown;
+  execute: (args: any, context?: { llm: LLMAdapter; signal?: AbortSignal }) => unknown;
 };
 // 플러그인에는 소속을 지정할 수 없는 등록 API만 전달한다.
 export type ToolRegistrar = { register(tool: RegisteredTool): () => void };
@@ -100,7 +100,8 @@ export class ToolManager {
   }
 
   // 툴과 인자를 검증한 뒤 실행하고, 호출·실행 오류도 결과로 반환한다.
-  async execute(name: string, argumentsJson: string, context?: { llm: LLMAdapter; discoveredTools?: string[] }) {
+  async execute(name: string, argumentsJson: string, context?: { llm: LLMAdapter; discoveredTools?: string[]; signal?: AbortSignal }) {
+    context?.signal?.throwIfAborted();
     if (this.disabled.has(name)) return { content: `툴 요청 오류: 비활성화된 툴입니다: ${name}`, isError: true };
     const tool = name === "ToolSearch" && this.mcpTools().length && context?.discoveredTools
       ? { ...searchDefinition, execute: (args: { query: string }) => this.search(args.query, context.discoveredTools!) }
@@ -129,6 +130,8 @@ export class ToolManager {
       const content: ToolContent = Array.isArray(value) ? value : String(value);
       return { content };
     } catch (error) {
+      // 중단 도중의 실제 종료 실패도 코어가 기록할 수 있도록 원래 오류를 전달한다.
+      if (context?.signal?.aborted) throw error;
       const message = error instanceof Error
         ? error.message
         : String(error);

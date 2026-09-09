@@ -128,7 +128,7 @@ export interface LLMAdapter {
   // 선택한 모델·연결에서 이미지 전송을 허용할지 명시한다. 미지정은 비활성화다.
   supportsImages?: boolean;
   // 공통 요청을 받아 모델을 한 번 호출하고 공통 결과로 반환한다.
-  generate(request: LLMRequest, observer?: LLMObserver): Promise<LLMResult>;
+  generate(request: LLMRequest, observer?: LLMObserver, signal?: AbortSignal): Promise<LLMResult>;
 }
 
 // 메시지의 텍스트 블록만 순서대로 이어 붙여 문자열로 반환한다.

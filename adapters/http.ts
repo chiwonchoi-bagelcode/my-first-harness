@@ -8,11 +8,13 @@ export async function requestJSON(
   headers: Record<string, string>,
   observer?: LLMObserver,
   stream = false,
+  signal?: AbortSignal,
 ) {
   // 관찰자 대기 중 원래 객체가 바뀌어도 기록과 실제 전송 내용이 같도록 먼저 직렬화한다.
   const body = JSON.stringify(request.body);
   await observer?.onRequest({ ...request, body: JSON.parse(body) });
-  const response = await fetch(request.url, { method: "POST", headers, body });
+  signal?.throwIfAborted();
+  const response = await fetch(request.url, { method: "POST", headers, body, signal });
   // Farm의 text/plain SSE도 읽고, 실패 직전까지 파싱한 이벤트를 응답 기록에 남긴다.
   if (request.api === "responses" && response.ok
     && (stream || response.headers.get("content-type")?.split(";")[0].trim() === "text/event-stream")) {

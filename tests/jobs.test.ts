@@ -23,6 +23,29 @@ async function ready(jobs: JobManager, jobId: string, pattern: RegExp) {
   throw new Error("프로세스 준비 신호 대기 시간 초과");
 }
 
+test("턴 취소는 foreground 프로세스 종료를 기다리고 기존 background 작업은 유지한다", async (t) => {
+  const jobs = new JobManager();
+  t.after(() => jobs.dispose());
+  const background = await jobs.start(nodeCommand("setInterval(()=>{},1000)"));
+  const controller = new AbortController();
+  const run = jobs.run(nodeCommand("console.log(process.pid); setInterval(()=>{},1000)"), controller.signal);
+  const rejection = assert.rejects(run, /턴 취소/);
+  while (jobs.list().length < 2) await new Promise((resolve) => setImmediate(resolve));
+  const foreground = jobs.list().find((job) => job.jobId !== background.jobId)!;
+  const running = await ready(jobs, foreground.jobId, /\d+/);
+  const pid = Number(running.stdout.trim());
+  controller.abort(new Error("턴 취소"));
+  await rejection;
+  assert.equal((await jobs.read(foreground.jobId)).status, "stopped");
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  assert.equal((await jobs.read(background.jobId)).status, "running");
+  const readController = new AbortController();
+  const reading = assert.rejects(jobs.read(background.jobId, MAX_JOB_WAIT_MS, readController.signal), /조회 취소/);
+  readController.abort(new Error("조회 취소"));
+  await reading;
+  assert.equal((await jobs.read(background.jobId)).status, "running");
+});
+
 // 소유한 테스트 프로세스가 실제로 사라졌는지 운영체제에 확인한다.
 async function assertExited(pid: number) {
   const deadline = Date.now() + 3000;

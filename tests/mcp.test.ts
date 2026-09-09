@@ -74,6 +74,26 @@ test("isError 툴 결과는 기존 ToolManager가 처리할 실행 오류로 전
   await assert.rejects(tool.execute({}), /접근 거부/);
 });
 
+test("MCP 호출 옵션에 턴 취소 신호를 넘겨 SDK가 취소를 전달할 수 있게 한다", async () => {
+  const controller = new AbortController();
+  const entered = Promise.withResolvers<void>();
+  const client = {
+    // 도구 목록만 제공하고 네트워크 연결은 만들지 않는다.
+    listTools: async () => ({ tools: [{ name: "wait", inputSchema: { type: "object" } }] }),
+    // 실제 SDK가 받는 옵션의 신호와 취소 전달을 검사한다.
+    callTool: async (_params: unknown, _schema: unknown, options: { signal: AbortSignal }) => {
+      assert.equal(options.signal, controller.signal);
+      entered.resolve();
+      return new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true }));
+    },
+  } as unknown as Client;
+  const [tool] = await discoverMcpTools(client, "test");
+  const rejected = assert.rejects(tool.execute({}, { signal: controller.signal }), /MCP 취소/);
+  await entered.promise;
+  controller.abort(new Error("MCP 취소"));
+  await rejected;
+});
+
 test("텍스트·리소스·이미지·구조화 결과의 순서를 보존하고 base64를 텍스트로 보내지 않는다", async () => {
   const data = solidPng().toString("base64");
   const content = await mcpResultContent({

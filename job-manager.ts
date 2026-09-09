@@ -83,10 +83,23 @@ export class JobManager {
   }
 
   // foreground 명령은 종료까지 기다리며, 기존처럼 텍스트 결과 또는 실행 오류를 반환한다.
-  async run(command: string): Promise<string> {
+  async run(command: string, signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted();
     const started = await this.start(command);
     const job = this.get(started.jobId);
-    await job.done;
+    let stopping: Promise<JobSnapshot> | undefined;
+    let onAbort!: () => void;
+    // 중단 요청은 이 foreground 작업만 종료하고 실제 프로세스 정리가 끝날 때까지 기다린다.
+    const aborted = new Promise<void>((resolve, reject) => {
+      onAbort = () => { stopping ??= this.stop(started.jobId); void stopping.then(() => resolve(), reject); };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+    });
+    try {
+      await Promise.race([job.done, aborted]);
+      await stopping;
+      signal?.throwIfAborted();
+    } finally { signal?.removeEventListener("abort", onAbort); }
     const result = this.snapshot(job);
     const output = result.stdout + result.stderr;
     const notice = result.stdoutTruncated || result.stderrTruncated
@@ -98,12 +111,13 @@ export class JobManager {
   }
 
   // 즉시 조회하거나 지정한 시간 안에 종료되기를 기다린 뒤 최신 상태를 반환한다.
-  async read(jobId: string, waitMs = 0): Promise<JobSnapshot> {
+  async read(jobId: string, waitMs = 0, signal?: AbortSignal): Promise<JobSnapshot> {
+    signal?.throwIfAborted();
     if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > MAX_JOB_WAIT_MS) {
       throw new Error(`waitMs는 0부터 ${MAX_JOB_WAIT_MS}까지의 정수여야 합니다.`);
     }
     const job = this.get(jobId);
-    await this.wait(job, waitMs);
+    await this.wait(job, waitMs, signal);
     return this.snapshot(job);
   }
 
@@ -156,13 +170,21 @@ export class JobManager {
   }
 
   // 종료 또는 대기 시간 만료 중 먼저 발생하는 시점까지 기다리고 타이머를 정리한다.
-  private async wait(job: Job, waitMs: number) {
+  private async wait(job: Job, waitMs: number, signal?: AbortSignal) {
     if (job.closed || waitMs === 0) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort!: () => void;
+    // 조회 대기만 취소하며 이미 백그라운드로 시작한 프로세스는 종료하지 않는다.
+    const aborted = new Promise<void>((_resolve, reject) => {
+      onAbort = () => reject(signal?.reason);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+    });
     try {
-      await Promise.race([job.done, new Promise<void>((resolve) => { timer = setTimeout(resolve, waitMs); })]);
+      await Promise.race([job.done, aborted, new Promise<void>((resolve) => { timer = setTimeout(resolve, waitMs); })]);
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
     }
   }
 

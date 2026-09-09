@@ -1,5 +1,5 @@
 import { createElement as h, useEffect, useState, useSyncExternalStore } from "react";
-import { Box, Text, render, useInput, useWindowSize } from "ink";
+import { Box, Text, render, useInput, useWindowSize, useStdout } from "ink";
 import { TuiInput, layoutInput } from "./tui-input.ts";
 import wrapAnsi from "wrap-ansi";
 import { stripVTControlCharacters } from "node:util";
@@ -18,6 +18,7 @@ export function conversationLines(entries: TuiEntry[], columns: number) {
     const prefix = { user: "나 › ", assistant: "에이전트 › ", tool: "  ↳ ", notice: "· ", error: "오류 › " }[entry.kind];
     const plain = displayText(entry.text);
     const text = entry.kind === "tool" && plain.length > 180 ? plain.slice(0, 180) + " …" : plain;
+    if (entry.kind === "tool") return [{ kind: entry.kind, text: prefix + text.split("\n")[0] }];
     return wrapAnsi(prefix + text, Math.max(1, columns), { hard: true, trim: false })
       .split("\n").map((line) => ({ kind: entry.kind, text: line }));
   });
@@ -29,13 +30,15 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
 }) {
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
   const { rows, columns } = useWindowSize();
+  const { stdout } = useStdout();
   // Ink 7.1.1의 fullscreen 경로는 끝 개행을 생략해 useCursor가 한 줄 어긋나므로 마지막 줄을 비운다.
   const screenRows = Math.max(1, rows - 1);
   const [input, setInput] = useState("");
   const [selected, setSelected] = useState(0);
   const [menuHidden, setMenuHidden] = useState(false);
   const [inputVersion, setInputVersion] = useState(0);
-  const [scroll, setScroll] = useState(0);
+  // null이면 최신 출력 추적, 숫자이면 보고 있는 첫 줄을 고정한다.
+  const [scroll, setScroll] = useState<number | null>(null);
   const [resumeSelected, setResumeSelected] = useState(0);
   const [extensionSelected, setExtensionSelected] = useState(0);
   const picker = state.resumePicker;
@@ -59,12 +62,27 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
   const extensionStart = Math.max(0, extensionIndex - extensionCount + 1);
   const extension = extensionPicker?.items[extensionIndex];
   const lines = conversationLines(state.entries, Math.max(1, columns));
-  const offset = Math.min(scroll, Math.max(0, lines.length - feedRows));
-  const end = Math.max(0, lines.length - offset);
-  const visible = lines.slice(Math.max(0, end - feedRows), end);
+  const bottom = Math.max(0, lines.length - feedRows);
+  const top = scroll === null ? bottom : Math.min(scroll, bottom);
+  const offset = bottom - top;
+  const visible = lines.slice(top, top + feedRows);
+
+  // SGR 마우스 보고를 켜 휠·트랙패드 이벤트를 받고 화면 종료 시 원래 모드로 복원한다.
+  useEffect(() => {
+    if (!stdout.isTTY) return;
+    stdout.write("\x1b[?1000h\x1b[?1006h");
+    return () => { stdout.write("\x1b[?1006l\x1b[?1000l"); };
+  }, [stdout]);
+  // 연속 휠 이벤트도 누적하며 맨 아래에 도달하면 새 출력 자동 추적을 재개한다.
+  function moveScroll(delta: number) {
+    setScroll((current) => {
+      const next = Math.max(0, Math.min(bottom, (current ?? bottom) + delta));
+      return next === bottom ? null : next;
+    });
+  }
 
   // 새 세션에서는 화면 위치를 최신 내용으로 되돌린다.
-  useEffect(() => { setScroll(0); }, [state.sessionId]);
+  useEffect(() => { setScroll(null); }, [state.sessionId]);
   // 목록을 새로 열면 최신 저장 세션부터 선택한다.
   useEffect(() => { setResumeSelected(0); }, [picker]);
   // 토글 후에는 선택을 유지하고 다른 종류의 목록을 열 때만 처음으로 돌아간다.
@@ -84,12 +102,23 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
     setInput("");
     setSelected(0);
     setMenuHidden(false);
-    setScroll(0);
+    setScroll(null);
     void controller.submit(value);
   }
   useInput((value, key) => {
     if (key.eventType === "release") return;
     if (key.ctrl && value === "c") { onQuit(); return; }
+    const mouse = /^\[<(\d+);(\d+);(\d+)([Mm])$/.exec(value);
+    if (mouse) {
+      const button = Number(mouse[1]);
+      const y = Number(mouse[3]);
+      if (!picker && !extensionPicker && mouse[4] === "M" && y >= 3 && y < 3 + feedRows) {
+        if ((button & 67) === 64) moveScroll(-3);
+        if ((button & 67) === 65) moveScroll(3);
+      }
+      return;
+    }
+    if (state.busy && key.escape) { controller.interrupt(); return; }
     if (extensionPicker) {
       if (state.busy) return;
       if (key.escape) { controller.dismissExtensionPicker(); return; }
@@ -108,8 +137,8 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
       }
       return;
     }
-    if (key.pageUp) setScroll(Math.min(lines.length, offset + feedRows));
-    if (key.pageDown) setScroll(Math.max(0, offset - feedRows));
+    if (key.pageUp) moveScroll(-feedRows);
+    if (key.pageDown) moveScroll(feedRows);
     if (state.busy) return;
     if (key.escape) setMenuHidden(true);
     if (choice && key.upArrow) setSelected((selectedIndex + allCandidates.length - 1) % allCandidates.length);
@@ -164,7 +193,7 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
         placeholder: extensionPicker ? "Space/Enter 토글 · Esc 닫기" : picker ? "목록에서 세션을 선택하세요." : state.busy ? "실행 중 · 새 요청은 완료 후 입력" : "메시지 또는 /명령",
         onChange(value) { setInput(value); setSelected(0); setMenuHidden(false); }, onSubmit: submit })),
     h(Text, { color: state.busy ? "yellow" : "green", wrap: "truncate-end" }, `상태: ${state.status}${state.pendingImages ? ` · 첨부 ${state.pendingImages}개` : ""}`),
-    h(Text, { dimColor: true, wrap: "truncate-end" }, `${offset ? "이전 내용 · " : ""}Enter 전송 · Shift+Enter/Cmd+J 줄바꿈 (미지원 시 Ctrl+J) · / 명령 · Ctrl+C 종료`),
+    h(Text, { dimColor: true, wrap: "truncate-end" }, `${offset ? "이전 내용 · " : ""}휠/PgUp/PgDn 스크롤 · Esc 턴 중단 · Enter 전송 · / 명령 · Ctrl+C 종료`),
   );
 }
 

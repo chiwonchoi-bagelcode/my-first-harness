@@ -68,7 +68,7 @@ test("TUI 명시적 갱신은 다음 요청부터 적용하고 삭제된 파일�
   await writeFile(file, "old");
   const seen: string[] = [];
   const ui = createTuiSession({ paths: createHarnessPaths(root, root), history, model: "test",
-    agent: { async turn(session) { seen.push(session.projectInstructions); return "ok"; }, async compact() {} },
+    agent: { interrupt() { return false; }, async turn(session) { seen.push(session.projectInstructions); return "ok"; }, async compact() {} },
     async saveSession() {}, async dispose() {},
   });
   await ui.start();

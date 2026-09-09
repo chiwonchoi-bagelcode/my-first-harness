@@ -30,6 +30,8 @@ function fixture(overrides: Partial<TuiOptions> = {}) {
   const controller = createTuiSession({
     model: "test", paths: createHarnessPaths("/test", "/test-home"), supportsImages: true,
     agent: {
+      // 기본 대체 코어에는 진행 중인 작업이 없다.
+      interrupt() { return false; },
       // 모델 실행 대신 입력과 첨부 개수를 확인한다.
       async turn(_session, input, images) { calls.push(`${input}:${images?.length}`); return "답변"; },
       // 명령이 코어의 압축 API에 연결되는지 확인한다.
@@ -56,6 +58,63 @@ function fixture(overrides: Partial<TuiOptions> = {}) {
 
 // React 상태 반영과 Ink 프레임 출력이 끝날 때까지 기다린다.
 async function settle() { await new Promise((resolve) => setTimeout(resolve, 60)); }
+
+test("휠·트랙패드 보고는 대화만 스크롤하고 새 출력에도 읽는 위치를 유지한다", async (t) => {
+  const { controller } = fixture();
+  for (let i = 0; i < 60; i++) controller.onEvent({ type: "assistant-text", text: `ROW-${String(i).padStart(3, "0")}` });
+  const view = render(h(TuiScreen, { controller, model: "test", onQuit() {} }));
+  t.after(() => { view.unmount(); view.cleanup(); });
+  await settle();
+  view.stdin.write("draft");
+  view.stdin.write("\x1b[<64;10;5M"); await settle();
+  const before = view.lastFrame()!.match(/ROW-\d+/g);
+  assert.ok(before?.length);
+  assert.doesNotMatch(view.lastFrame()!, /ROW-059/);
+  controller.onEvent({ type: "assistant-text", text: "ROW-060" }); await settle();
+  assert.deepEqual(view.lastFrame()!.match(/ROW-\d+/g), before);
+  assert.match(view.lastFrame()!, /> draft/);
+  assert.doesNotMatch(view.lastFrame()!, /64;10/);
+  for (let i = 0; i < 10; i++) view.stdin.write("\x1b[<65;10;5M");
+  await settle();
+  assert.match(view.lastFrame()!, /ROW-060/);
+  controller.onEvent({ type: "assistant-text", text: "ROW-061" }); await settle();
+  assert.match(view.lastFrame()!, /ROW-061/);
+});
+
+test("툴 결과는 성공·실패와 시간 및 첫 줄만 표시하고 전체 내용은 화면에 펼치지 않는다", () => {
+  const { controller } = fixture();
+  controller.onEvent({ type: "tool-end", name: "readTextFile", durationMs: 1234, content: "first line\nsecret second line" });
+  controller.onEvent({ type: "tool-end", name: "runCommand", durationMs: 99, content: "failed line\nmore", isError: true });
+  assert.match(controller.getSnapshot().entries[0].text, /성공 · readTextFile · 1.23s · first line/);
+  assert.match(controller.getSnapshot().entries[1].text, /실패 · runCommand · 0.10s · failed line/);
+  assert.doesNotMatch(JSON.stringify(controller.getSnapshot().entries), /secret second line/);
+  assert.equal(conversationLines(controller.getSnapshot().entries, 40).length, 2);
+});
+
+test("Esc는 턴 중단만 요청하고 완료 전 입력 잠금을 유지하며 이후 같은 세션을 이어간다", async (t) => {
+  const pending = Promise.withResolvers<string>();
+  let requests = 0;
+  let turns = 0;
+  const { controller } = fixture({ agent: {
+    // 완료 시점은 테스트가 결정해 요청과 완료가 구분되는지 확인한다.
+    interrupt() { requests++; return requests === 1; },
+    async turn() { return ++turns === 1 ? pending.promise : "다음 답변"; },
+    async compact() {},
+  } });
+  const view = render(h(TuiScreen, { controller, model: "test", onQuit() { assert.fail("Esc는 quit이 아니다"); } }));
+  t.after(() => { view.unmount(); view.cleanup(); });
+  const turn = controller.submit("작업"); await settle();
+  view.stdin.write("\x1b"); await settle();
+  assert.equal(requests, 1);
+  assert.equal(controller.getSnapshot().busy, true);
+  assert.match(controller.getSnapshot().status, /중단 요청됨/);
+  controller.onEvent({ type: "turn-interrupted" }); pending.resolve(""); await turn;
+  assert.equal(controller.getSnapshot().busy, false);
+  await controller.submit("이어서");
+  assert.equal(turns, 2);
+  assert.equal(controller.getSnapshot().closed, false);
+  assert.match(controller.getSnapshot().entries.at(-1)!.text, /다음 답변/);
+});
 
 // TUI 입력이 실제 관리 API로 전달되는지 검사할 메모리 목록이다.
 function extensionFixture() {
@@ -172,6 +231,8 @@ test("한글 입력과 진행 출력이 보이며 실행 중에는 요청을 중
   const pending = Promise.withResolvers<string>();
   let invoked = 0;
   const { controller } = fixture({ agent: {
+    // 이 테스트는 입력 잠금만 검사한다.
+    interrupt() { return false; },
     async turn() { invoked++; return pending.promise; }, async compact() {},
   } });
   const view = render(h(TuiScreen, { controller, model: "test", supportsImages: true, onQuit() {} }));
@@ -296,6 +357,8 @@ test("PageUp/Down으로 긴 대화를 보고 Escape로 후보만 닫는다", asy
 test("실행 실패 후 새 일반 요청은 막고 새 세션에서 다시 실행할 수 있다", async () => {
   let attempts = 0;
   const { controller } = fixture({ agent: {
+    // 실패한 모의 턴은 이미 종료되었다.
+    interrupt() { return false; },
     async turn() { if (++attempts === 1) throw new Error("모의 요청 실패"); return "완료"; },
     async compact() {},
   } });
@@ -483,6 +546,7 @@ test("TTY 출력은 끝 개행을 유지해 실제 커서를 입력 줄에 놓�
   t.after(() => { view.unmount(); view.cleanup(); stdin.destroy(); stdout.destroy(); });
   await settle();
   // 23개 표시 줄 뒤 개행으로 24번째 줄에 도착한 후 네 줄 올라가면 입력 줄(0-based 19)이다.
+  assert.match(output, /\x1b\[\?1000h\x1b\[\?1006h/);
   assert.match(output, /Ctrl\+C 종료\n\x1b\[4A\x1b\[4G\x1b\[\?25h/);
   output = "";
   stdin.write("한글"); await settle();
@@ -490,4 +554,6 @@ test("TTY 출력은 끝 개행을 유지해 실제 커서를 입력 줄에 놓�
   output = "";
   stdin.write("\x1b[13;2u"); await settle();
   assert.match(output, /Ctrl\+C 종료\n\x1b\[4A\x1b\[4G\x1b\[\?25h/);
+  view.unmount();
+  assert.match(output, /\x1b\[\?1006l\x1b\[\?1000l/);
 });

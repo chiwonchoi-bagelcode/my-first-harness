@@ -19,9 +19,9 @@ export function registerShellTools(toolManager: any, cwd = process.cwd()) {
       required: ["command"],
     },
     // 상태 객체는 기존 ToolManager가 문자열로 기록할 수 있도록 JSON으로 반환한다.
-    execute: async (args: { command: string; background?: boolean }) => args.background
+    execute: async (args: { command: string; background?: boolean }, context?: { signal?: AbortSignal }) => args.background
       ? JSON.stringify(await jobs.start(args.command))
-      : jobs.run(args.command),
+      : jobs.run(args.command, context?.signal),
   });
   toolManager.register({
     name: "readJob",
@@ -35,7 +35,8 @@ export function registerShellTools(toolManager: any, cwd = process.cwd()) {
       required: ["jobId"],
     },
     // 조회 자체는 성공한 도구 호출이며 명령 실패 여부는 status와 exitCode에 담는다.
-    execute: async (args: { jobId: string; waitMs?: number }) => JSON.stringify(await jobs.read(args.jobId, args.waitMs)),
+    execute: async (args: { jobId: string; waitMs?: number }, context?: { signal?: AbortSignal }) =>
+      JSON.stringify(await jobs.read(args.jobId, args.waitMs, context?.signal)),
   });
   toolManager.register({
     name: "listJobs",

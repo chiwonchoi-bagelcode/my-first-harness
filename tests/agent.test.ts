@@ -42,6 +42,92 @@ function fixture(adapter: LLMAdapter, overrides: Partial<AgentOptions> = {}) {
   return { agent, events, saved, records };
 }
 
+test("중단 신호는 모델 요청에 전달되고 interrupted 저장 후 같은 세션에서 새 턴을 실행한다", async () => {
+  const entered = Promise.withResolvers<void>();
+  let calls = 0;
+  const { agent, events, records, saved } = fixture({
+    // 첫 요청은 신호를 기다리고 두 번째 요청은 정상 완료한다.
+    async generate(_request, _observer, signal) {
+      if (++calls > 1) return reply("다시 완료");
+      assert.ok(signal);
+      entered.resolve();
+      return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    },
+  });
+  assert.equal(agent.interrupt(), false);
+  const session = createSession("/test");
+  const running = agent.turn(session, "시작");
+  await entered.promise;
+  assert.equal(agent.interrupt(), true);
+  assert.equal(agent.interrupt(), false);
+  assert.equal(await running, "");
+  assert.ok(records.some((event) => event.type === "turn-end" && event.outcome === "interrupted"));
+  assert.equal(events.at(-1)?.type, "turn-interrupted");
+  assert.equal(saved.length, 1);
+  assert.equal(await agent.turn(session, "다시"), "다시 완료");
+});
+
+test("실행 도중 중단하면 남은 툴을 건너뛰고 호출 ID별 결과를 채워 다음 요청을 보낸다", async () => {
+  const tools = new ToolManager();
+  const entered = Promise.withResolvers<void>();
+  let unexpected = 0;
+  tools.register({ name: "wait", description: "wait", parameters: { type: "object" },
+    // 원격·비동기 툴처럼 실행 중 취소 신호를 받는다.
+    execute(_args, context) {
+      entered.resolve();
+      return new Promise((_resolve, reject) => context!.signal!.addEventListener("abort", () => reject(context!.signal!.reason), { once: true }));
+    },
+  });
+  tools.register({ name: "later", description: "later", parameters: { type: "object" },
+    // 중단 뒤 호출되면 테스트가 실패한다.
+    execute() { unexpected++; return "bad"; },
+  });
+  let calls = 0;
+  const { agent, records, events } = fixture({ async generate(request) {
+    if (++calls === 1) return { stopReason: "tool-calls", message: { role: "assistant", content: [
+      { type: "tool-call", id: "one", name: "wait", arguments: "{}" },
+      { type: "tool-call", id: "two", name: "later", arguments: "{}" },
+    ] } };
+    const results = request.messages.flatMap((message) => message.role === "tool" ? message.content : []);
+    assert.deepEqual(results.map((result) => result.toolCallId), ["one", "two"]);
+    assert.ok(results.every((result) => result.isError));
+    return reply("다시 완료");
+  } }, { toolManager: tools });
+  const session = createSession("/test");
+  const running = agent.turn(session, "시작");
+  await entered.promise;
+  agent.interrupt(); await running;
+  assert.equal(unexpected, 0);
+  assert.equal(events.filter((event) => event.type === "tool-end").length, 1);
+  assert.equal(records.filter((event) => event.type === "tool-start").length, 1);
+  assert.equal(await agent.turn(session, "이어서"), "다시 완료");
+});
+
+test("취소 불가능한 도구는 실제 완료를 기다리고 성공 결과를 보존한 뒤 중단한다", async () => {
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<string>();
+  const tools = new ToolManager();
+  tools.register({ name: "write", description: "write", parameters: { type: "object" },
+    // 파일 쓰기처럼 이미 시작한 처리가 끝날 때까지 기다리는 툴이다.
+    execute() { entered.resolve(); return finish.promise; },
+  });
+  const { agent, records } = fixture({ async generate() { return { stopReason: "tool-calls", message: {
+    role: "assistant", content: [{ type: "tool-call", id: "write-one", name: "write", arguments: "{}" }],
+  } }; } }, { toolManager: tools });
+  const session = createSession("/test");
+  let ended = false;
+  const running = agent.turn(session, "write").then(() => { ended = true; });
+  await entered.promise;
+  agent.interrupt();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(ended, false);
+  finish.resolve("파일 저장 완료"); await running;
+  const result = records.find((event) => event.type === "tool-end");
+  assert.ok(result?.type === "tool-end");
+  assert.equal(result.result.content, "파일 저장 완료");
+  assert.equal(result.result.isError, undefined);
+});
+
 test("코어·CLI 모듈을 import해도 터미널·모델 호출·출력이 시작되지 않는다", () => {
   const urls = ["agent.ts", "cli.ts", "session.ts", "tool-manager.ts"].map((file) => new URL(`../${file}`, import.meta.url).href);
   const child = spawnSync(process.execPath, ["--input-type=module", "-e", `

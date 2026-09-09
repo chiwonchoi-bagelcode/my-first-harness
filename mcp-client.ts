@@ -17,7 +17,7 @@ export type McpTool = {
   name: string;
   description: string;
   parameters: Record<string, any>;
-  execute: (args: Record<string, unknown>) => Promise<ToolContent>;
+  execute: (args: Record<string, unknown>, context?: { signal?: AbortSignal }) => Promise<ToolContent>;
 };
 
 const requestOptions = { timeout: 15_000 };
@@ -69,11 +69,11 @@ export async function discoverMcpTools(client: Client, serverName: string): Prom
         name: mcpToolName(serverName, remote.name),
         description: remote.description ?? "",
         parameters: remote.inputSchema,
-        execute: async (args) => {
+        execute: async (args, context) => {
           const result = await client.callTool(
             { name: remote.name, arguments: args },
             undefined,
-            requestOptions,
+            { ...requestOptions, signal: context?.signal },
           ) as CallToolResult;
           const content = await mcpResultContent(result);
           if (result.isError) throw new Error(contentBlocks(content)

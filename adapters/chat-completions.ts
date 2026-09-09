@@ -117,7 +117,7 @@ export function createChatCompletionsAdapter(config: Config): LLMAdapter {
   return {
     supportsImages: false,
     // 공통 요청을 API에 보내고 응답 형식과 종료 이유를 확인해 공통 결과로 반환한다.
-    async generate(request, observer) {
+    async generate(request, observer, signal) {
       // 이 레거시 어댑터는 텍스트 전용이다. 이미지가 조용히 사라지지 않도록 거절한다.
       checkImageInput(request.messages, false);
       const { response, result } = await requestJSON({
@@ -138,7 +138,7 @@ export function createChatCompletionsAdapter(config: Config): LLMAdapter {
           ...(request.maxOutputTokens !== undefined
             ? { max_completion_tokens: request.maxOutputTokens } : {}),
         },
-      }, { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" }, observer);
+      }, { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" }, observer, false, signal);
       if (!response.ok || !result.choices?.[0]?.message) {
         throw new Error(result.error?.message ?? `LLM 요청 실패: HTTP ${response.status}`);
       }

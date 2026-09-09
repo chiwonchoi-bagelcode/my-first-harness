@@ -18,6 +18,9 @@ import type { SkillManager } from "./skill-manager.ts";
 export type AgentEvent =
   | { type: "assistant-text"; text: string }
   | { type: "tool-start"; name: string; arguments: string }
+  | { type: "tool-end"; name: string; durationMs: number; content: import("./llm-types.ts").ToolContent; isError?: boolean }
+  | { type: "turn-interrupt-requested" }
+  | { type: "turn-interrupted" }
   | { type: "compaction-start" }
   | { type: "compaction-end"; beforeChars: number; afterChars: number }
   | { type: "compaction-empty" }
@@ -37,6 +40,8 @@ export type AgentOptions = {
 
 // CLI·TUI·웹에서 호출할 실행 API다. 같은 세션의 호출은 순서대로 기다려야 한다.
 export interface Agent {
+  // 실행 중인 턴에 중단을 요청한다. true는 요청 접수이며 완료는 이벤트로 알린다.
+  interrupt(): boolean;
   // 사용자 입력 한 번에 대한 모델·툴 반복을 실행하고 최종 텍스트를 반환한다.
   turn(session: Session, input: string, images?: ImageBlock[]): Promise<string>;
   // 현재 대화를 요약하고 전후 스냅샷과 실행 기록을 저장한다.
@@ -48,6 +53,15 @@ export function createAgent(options: AgentOptions): Agent {
   const { adapter, toolManager, skillManager, history, paths, onEvent, saveSession = persistSession } = options;
   const budget = adapter.contextBudget ?? DEFAULT_CONTEXT_BUDGET;
   compactionThreshold(budget);
+  let active: AbortController | undefined;
+
+  // 화면과 무관하게 현재 턴의 취소 신호를 발생시키며 중복 요청은 무시한다.
+  function interrupt() {
+    if (!active || active.signal.aborted) return false;
+    active.abort(new Error("사용자가 턴 중단을 요청했습니다."));
+    onEvent?.({ type: "turn-interrupt-requested" });
+    return true;
+  }
 
   // 시스템 지침·스킬·작업 폴더와 현재 대화·툴 정의를 공통 요청으로 조립한다.
   async function assembleContext(session: Session): Promise<LLMRequest> {
@@ -74,7 +88,7 @@ export function createAgent(options: AgentOptions): Agent {
     const before = contextSize(session);
     onEvent?.({ type: "compaction-start" });
     const compacted = await compactSession(session, (conversation) =>
-      summarize(recordLLM(adapter, history, scope, "compaction"), conversation), retentionTokens(budget),
+      summarize(recordLLM(adapter, history, scope, "compaction", active?.signal), conversation), retentionTokens(budget),
     );
     if (compacted) {
       await history.append(scope, { type: "context-update", reason: "compact", beforeChars: before,
@@ -113,7 +127,7 @@ export function createAgent(options: AgentOptions): Agent {
       }
     }
     const context = await assembleContext(session);
-    const result = await recordLLM(adapter, history, scope, "step").generate(context);
+    const result = await recordLLM(adapter, history, scope, "step", active?.signal).generate(context);
     // 잘린 응답은 model-response 원본 로그에만 남기고 재전송용 대화에는 넣지 않는다.
     if (result.stopReason !== "max-tokens") await rememberMessage(session, result.message, scope);
 
@@ -122,20 +136,27 @@ export function createAgent(options: AgentOptions): Agent {
 
   // 사용자 입력을 기록하고 모델 호출과 툴 실행을 반복해 최종 답변을 반환한다.
   async function turn(session: Session, input: string, images: ImageBlock[] = []) {
+    if (active) throw new Error("이미 실행 중인 턴이 있습니다.");
+    const controller = new AbortController();
+    active = controller;
+    const { signal } = controller;
     const turnScope = { sessionId: session.id, turnId: randomUUID() };
-    await history.append(turnScope, { type: "turn-start" });
-    await rememberMessage(session, {
-      role: "user",
-      content: [{ type: "text", text: input }, ...images],
-    }, turnScope);
-
-    // 정상 스텝이 끼어도 초기화하지 않아 한 턴의 복구 요청 수를 제한한다.
-    let outputLimitRecoveries = 0;
-    const maxOutputLimitRecoveries = 2;
+    let runningTool: { id: string; name: string; started: number; scope: HistoryScope } | undefined;
     try {
+      await history.append(turnScope, { type: "turn-start" });
+      await rememberMessage(session, {
+        role: "user",
+        content: [{ type: "text", text: input }, ...images],
+      }, turnScope);
+
+      // 정상 스텝이 끼어도 초기화하지 않아 한 턴의 복구 요청 수를 제한한다.
+      let outputLimitRecoveries = 0;
+      const maxOutputLimitRecoveries = 2;
       for (let stepNumber = 1; ; stepNumber++) {
+        signal.throwIfAborted();
         const scope = { ...turnScope, step: stepNumber };
         const output = await step(session, scope);
+        signal.throwIfAborted();
         if (output.stopReason === "max-tokens") {
           if (outputLimitRecoveries >= maxOutputLimitRecoveries) {
             throw new Error(`LLM 응답이 정상 완료되지 않았습니다: max-tokens (작업 분할 복구 ${maxOutputLimitRecoveries}회 소진)`);
@@ -166,15 +187,17 @@ export function createAgent(options: AgentOptions): Agent {
 
         for (const toolCall of output.message.content) {
           if (toolCall.type !== "tool-call") continue;
+          signal.throwIfAborted();
           await history.append(scope, { type: "tool-start", toolCallId: toolCall.id,
             name: toolCall.name, arguments: toolCall.arguments });
           onEvent?.({ type: "tool-start", name: toolCall.name, arguments: toolCall.arguments });
           const started = performance.now();
+          runningTool = { id: toolCall.id, name: toolCall.name, started, scope };
           let toolResult = await toolManager.execute(
             toolCall.name,
             toolCall.arguments,
-            { llm: recordLLM(adapter, history, { ...scope, parentToolCallId: toolCall.id }, "other-llm"),
-              discoveredTools: session.discoveredTools },
+            { llm: recordLLM(adapter, history, { ...scope, parentToolCallId: toolCall.id }, "other-llm", signal),
+              discoveredTools: session.discoveredTools, signal },
           );
           if (Array.isArray(toolResult.content)) {
             try {
@@ -185,22 +208,54 @@ export function createAgent(options: AgentOptions): Agent {
               toolResult = { content: error instanceof Error ? error.message : String(error), isError: true };
             }
           }
+          const durationMs = performance.now() - started;
           await history.append(scope, { type: "tool-end", toolCallId: toolCall.id,
-            durationMs: performance.now() - started, result: toolResult });
+            durationMs, result: toolResult });
 
           await rememberMessage(session, {
             role: "tool",
             content: [{ type: "tool-result", toolCallId: toolCall.id, ...toolResult }],
           }, scope);
+          runningTool = undefined;
+          onEvent?.({ type: "tool-end", name: toolCall.name, durationMs, ...toolResult });
         }
       }
     } catch (error) {
+      if (signal.aborted) {
+        // 호출마다 결과를 채워 다음 사용자 입력 때도 제공자 API의 툴 호출 규약을 지킨다.
+        const lastAssistant = session.messages.findLastIndex((message) => message.role === "assistant");
+        const assistant = session.messages[lastAssistant];
+        const answered = new Set(session.messages.slice(lastAssistant + 1).flatMap((message) =>
+          message.role === "tool" ? message.content.map((block) => block.toolCallId) : []));
+        if (assistant?.role === "assistant") for (const call of assistant.content) {
+          if (call.type !== "tool-call" || answered.has(call.id)) continue;
+          const content = runningTool?.id === call.id
+            ? "사용자 요청으로 실행 대기를 중단했습니다. 이미 발생한 변경은 되돌리지 않았습니다. MCP 등 원격 작업의 실제 종료 여부는 미확인일 수 있습니다. 재실행 전에 상태를 확인하세요.\n" +
+              `중단 시 실행 상태: ${error instanceof Error ? error.message : String(error)}`
+            : "사용자 요청으로 턴이 중단되어 이 도구는 실행하지 않았습니다.";
+          const result = { content, isError: true };
+          if (runningTool?.id === call.id) {
+            const durationMs = performance.now() - runningTool.started;
+            await history.append(runningTool.scope, { type: "tool-end", toolCallId: call.id, durationMs, result });
+            onEvent?.({ type: "tool-end", name: call.name, durationMs, ...result });
+          }
+          await rememberMessage(session, { role: "tool", content: [{ type: "tool-result", toolCallId: call.id, ...result }] }, turnScope);
+        }
+        await rememberMessage(session, { role: "user", content: [{ type: "text", text:
+          "[하네스 알림] 사용자가 이전 턴을 중단했습니다. 완료한 작업은 유지됩니다. 새 사용자 지시를 따르세요." }] }, turnScope, "harness");
+        await saveSession(session, paths);
+        await history.append(turnScope, { type: "turn-end", outcome: "interrupted" });
+        onEvent?.({ type: "turn-interrupted" });
+        return "";
+      }
       await saveSession(session, paths);
       await history.append(turnScope, { type: "turn-end", outcome: "error",
         error: error instanceof Error ? error.message : String(error) });
       throw error;
+    } finally {
+      active = undefined;
     }
   }
 
-  return { turn, compact: compactAndSave };
+  return { turn, compact: compactAndSave, interrupt };
 }

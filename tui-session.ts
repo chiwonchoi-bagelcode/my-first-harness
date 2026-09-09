@@ -67,6 +67,8 @@ export function createTuiSession(options: TuiOptions) {
   let images: ImageBlock[] = [];
   let failedTurn = false;
   let closePromise: Promise<void> | undefined;
+  let activeTurn: Promise<string> | undefined;
+  let stopping = false;
   let state: TuiState = { sessionId: session.id, entries: [], pendingImages: 0, busy: false, status: "대기 중", closed: false };
   const listeners = new Set<() => void>();
 
@@ -93,6 +95,16 @@ export function createTuiSession(options: TuiOptions) {
         append("tool", `${event.name} ${event.arguments}`);
         update({ status: `실행 중 · ${event.name}` });
         break;
+      case "tool-end": {
+        const text = typeof event.content === "string" ? event.content : event.content.map((block) =>
+          block.type === "text" ? block.text : `[이미지 ${block.width}×${block.height}]`).join("\n");
+        const firstLine = text.split(/\r?\n/).find((line) => line.trim())?.trim() || "(출력 없음)";
+        append("tool", `${event.isError ? "실패" : "성공"} · ${event.name} · ${(event.durationMs / 1000).toFixed(2)}s · ${firstLine}`);
+        update({ status: stopping ? "중단 요청됨 · 실행 정리 중" : "모델 응답 대기 중" });
+        break;
+      }
+      case "turn-interrupt-requested": stopping = true; update({ status: "중단 요청됨 · 실행 정리 중" }); break;
+      case "turn-interrupted": append("notice", "턴 중단 완료 · 완료한 변경은 유지됩니다. 다음 요청을 입력하세요."); break;
       case "compaction-start": update({ status: "대화 요약 중" }); break;
       case "compaction-end": append("notice", `압축 완료: ${event.beforeChars} → ${event.afterChars}자`); break;
       case "compaction-empty": append("notice", "최근 기록을 보존하면 요약할 오래된 구간이 없습니다."); break;
@@ -163,12 +175,14 @@ export function createTuiSession(options: TuiOptions) {
         images = [];
         update({ pendingImages: 0, status: "모델 응답 대기 중" });
         try {
-          const output = await agent.turn(session, input, attachments);
+          activeTurn = agent.turn(session, input, attachments);
+          const output = await activeTurn;
           if (!state.closed) {
             await saveSession(session, paths);
-            append("assistant", output);
+            if (output) append("assistant", output);
           }
         } catch (error) { failedTurn = true; throw error; }
+        finally { activeTurn = undefined; stopping = false; }
       }
     } catch (error) {
       append("error", error instanceof Error ? error.message : String(error));
@@ -195,6 +209,8 @@ export function createTuiSession(options: TuiOptions) {
   function close(reason = "runtime-exit") {
     closePromise ??= Promise.resolve().then(async () => {
       update({ closed: true, busy: true, status: "종료 중" });
+      agent.interrupt();
+      await activeTurn?.catch(() => {});
       const [result] = await Promise.allSettled([dispose()]);
       await history.append({ sessionId: session.id }, { type: "session-close", reason });
       await history.flush();
@@ -204,6 +220,8 @@ export function createTuiSession(options: TuiOptions) {
   }
   return {
     start, submit, close, onEvent, toggleExtension,
+    // 중단 완료 전까지 busy를 유지하며 다음 요청과 현재 턴이 겹치지 않게 한다.
+    interrupt() { if (activeTurn && agent.interrupt()) { stopping = true; update({ status: "중단 요청됨 · 실행 정리 중" }); } },
     // 확장 목록을 닫아도 변경한 프로젝트 설정은 유지한다.
     dismissExtensionPicker() { if (!state.busy) update({ extensionPicker: undefined }); },
     // 선택 취소는 현재 세션과 첨부를 바꾸지 않고 목록만 닫는다.

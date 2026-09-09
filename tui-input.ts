@@ -93,6 +93,8 @@ export function TuiInput({ value, width, height, cursorStart, focus, menuOpen = 
   // Bracketed paste는 키 입력과 분리하므로 붙여넣은 Enter가 전송으로 오인되지 않는다.
   usePaste(insert, { isActive: focus });
   useInput((input, key) => {
+    // Ink가 전달한 마우스 보고 문자열을 사용자 입력에 섞지 않는다.
+    if (/^\[<\d+;\d+;\d+[Mm]$/.test(input)) return;
     if (key.eventType === "release") return;
     if (key.tab || key.escape || key.pageUp || key.pageDown) return;
     if (menuOpen && (key.upArrow || key.downArrow)) return;

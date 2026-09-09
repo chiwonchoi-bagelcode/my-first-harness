@@ -22,7 +22,7 @@ export type HistoryEvent =
   | { type: "session-start"; workspaceDirectory: string; system: string }
   | { type: "session-resume"; messageCount: number }
   | { type: "turn-start" }
-  | { type: "turn-end"; outcome: "completed" | "error"; error?: string }
+  | { type: "turn-end"; outcome: "completed" | "error" | "interrupted"; error?: string }
   | { type: "command"; input: string }
   | { type: "context-update"; reason: "prune" | "compact"; beforeChars: number; afterChars: number; messages: Message[] }
   | { type: "session-close"; reason: string };

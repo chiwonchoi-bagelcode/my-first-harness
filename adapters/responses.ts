@@ -143,7 +143,7 @@ export function createResponsesAdapter(config: Config): LLMAdapter {
   return {
     supportsImages: config.supportsImages ?? false,
     // 공통 요청을 Responses로 보내고 공통 답변과 다음 요청용 원본 출력 항목을 반환한다.
-    async generate(request, observer) {
+    async generate(request, observer, signal) {
       if (!config.apiKey) throw new Error("Responses API 인증 키가 없습니다.");
       checkImageInput(request.messages, config.supportsImages);
       const { response, result } = await requestJSON({
@@ -165,7 +165,7 @@ export function createResponsesAdapter(config: Config): LLMAdapter {
           ...(config.supportsMaxOutputTokens !== false && request.maxOutputTokens !== undefined
             ? { max_output_tokens: request.maxOutputTokens } : {}),
         },
-      }, { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" }, observer, config.stream);
+      }, { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" }, observer, config.stream, signal);
       if (!response.ok || !isObject(result) || result.error || result.status === "failed") {
         const error = isObject(result) && isObject(result.error) ? result.error.message : undefined;
         throw new Error(typeof error === "string" ? error : `LLM 요청 실패: HTTP ${response.status}`);

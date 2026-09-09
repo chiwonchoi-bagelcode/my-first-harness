@@ -137,7 +137,7 @@ export function createAnthropicMessagesAdapter(config: Config): LLMAdapter {
   return {
     supportsImages: config.supportsImages ?? false,
     // 요청·응답 형식과 인증을 변환하며 기존 하네스의 툴 실행 흐름은 유지한다.
-    async generate(request, observer) {
+    async generate(request, observer, signal) {
       if (!config.apiKey) throw new Error("Anthropic API 인증 키가 없습니다.");
       checkImageInput(request.messages, config.supportsImages);
       const { response, result } = await requestJSON({
@@ -155,7 +155,7 @@ export function createAnthropicMessagesAdapter(config: Config): LLMAdapter {
       }, {
         "Content-Type": "application/json", "anthropic-version": "2023-06-01",
         ...(config.auth === "bearer" ? { Authorization: `Bearer ${config.apiKey}` } : { "x-api-key": config.apiKey }),
-      }, observer);
+      }, observer, false, signal);
       if (!response.ok || !isObject(result) || result.error || result.type !== "message" || result.role !== "assistant") {
         const error = isObject(result) && isObject(result.error) ? result.error.message : undefined;
         throw new Error(typeof error === "string" ? error : `LLM 요청 실패: HTTP ${response.status} (Anthropic 메시지 형식 확인 필요)`);

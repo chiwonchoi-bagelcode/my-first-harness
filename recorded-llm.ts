@@ -10,12 +10,14 @@ export function recordLLM(
   history: HistorySink,
   scope: HistoryScope,
   purpose: CallPurpose,
+  signal?: AbortSignal,
 ): LLMAdapter {
   return {
     supportsImages: adapter.supportsImages,
     contextBudget: adapter.contextBudget,
     // 호출별 ID로 실제 전송·수신·실패를 연결하며 재시도 정책은 변경하지 않는다.
     async generate(request) {
+      signal?.throwIfAborted();
       const callId = randomUUID();
       const started = performance.now();
       await history.append(scope, { type: "model-start", callId, purpose, request });
@@ -28,7 +30,8 @@ export function recordLLM(
           onRequest: (wire) => history.append(scope, { type: "model-request", callId, request: wire }),
           // 파싱·정규화 실패에도 응답과 사용량이 남도록 먼저 기록한다.
           onResponse: (wire) => history.append(scope, { type: "model-response", callId, response: wire }),
-        });
+        }, signal);
+        signal?.throwIfAborted();
       } catch (error) {
         await history.append(scope, {
           type: "model-error", callId, durationMs: performance.now() - started,
