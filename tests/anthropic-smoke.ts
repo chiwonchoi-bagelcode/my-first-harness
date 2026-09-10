@@ -26,11 +26,19 @@ async function main() {
   globalThis.fetch = async (url, init) => {
     const target = url instanceof Request ? url.url : String(url);
     if (target !== "https://aiproxy-api.backoffice.bagelgames.com/anthropic/v1/messages") return originalFetch(url, init);
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.stream, true);
     const response = await originalFetch(url, { ...init, signal: AbortSignal.timeout(60_000) });
-    const data = await response.clone().json();
-    console.log(JSON.stringify({ request: ++requests, http: response.status, model: data.model,
-      stopReason: data.stop_reason, contentTypes: (data.content ?? []).map((block: any) => block.type) }));
-    if (response.ok) assert.match(data.model, /claude-haiku-4-5/);
+    // 본문은 SSE다. 진단 출력용으로만 이벤트를 나눠 모델·종료 사유·블록 종류·조각 수를 읽는다. 어댑터는 원본 응답을 그대로 읽는다.
+    const events = (await response.clone().text()).split(/\r?\n\r?\n/)
+      .map((block) => block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n"))
+      .filter(Boolean).map((payload) => { try { return JSON.parse(payload); } catch { return {}; } });
+    const start = events.find((event: any) => event.type === "message_start")?.message ?? events.at(-1) ?? {};
+    const stop = events.find((event: any) => event.type === "message_delta")?.delta ?? {};
+    console.log(JSON.stringify({ request: ++requests, http: response.status, contentType: response.headers.get("content-type"), model: start.model,
+      stopReason: stop.stop_reason, contentTypes: events.filter((event: any) => event.type === "content_block_start").map((event: any) => event.content_block?.type),
+      textDeltaEvents: events.filter((event: any) => event.type === "content_block_delta" && event.delta?.type === "text_delta").length }));
+    if (response.ok) assert.match(String(start.model), /claude-haiku-4-5/);
     return response;
   };
   try {
@@ -43,7 +51,7 @@ async function main() {
         // 실행 함수는 저장하지 않아 모델이 실제 파일·메모리를 변경할 수 없게 한다.
         register(tool) { definitions.push({ name: tool.name, description: tool.description, parameters: tool.parameters }); },
       }, configs);
-      assert.equal(configs.length, 4, "실제 하네스와 같은 MCP 서버 4개가 필요합니다.");
+      assert.equal(configs.length, 2, "실제 하네스와 같은 MCP 서버 2개(memory·playwright)가 필요합니다.");
       assert.equal(clients.length, configs.length, "모든 MCP 서버가 연결되어야 합니다.");
     }
     console.log(`Haiku에 실제 툴 정의 ${definitions.length}개 전송 (기본 ${builtinCount}개 + MCP ${definitions.length - builtinCount}개)`);
@@ -51,9 +59,14 @@ async function main() {
     const request: LLMRequest = { system: "Follow the user's request. Keep answers short.",
       messages: [{ role: "user", content: [{ type: "text", text: "Reply with exactly pong." }] }],
       tools: definitions, maxOutputTokens: 2048 };
-    const first = await adapter.generate(request);
+    // 텍스트 조각이 도착 순서대로 콜백에 오고 합치면 완성본과 같은지 확인한다.
+    const deltas: string[] = [];
+    const first = await adapter.generate(request, { async onRequest() {}, async onResponse() {}, onTextDelta: (text) => { deltas.push(text); } });
     assert.equal(first.stopReason, "stop");
     assert.match(textOf(first.message), /pong/i);
+    assert.ok(deltas.length > 0, "SSE 텍스트 조각이 onTextDelta로 전달되어야 합니다.");
+    assert.equal(deltas.join(""), textOf(first.message), "조각을 합친 결과가 완성 텍스트와 같아야 합니다.");
+    console.log(`PASS: 스트리밍 조각 ${deltas.length}개 수신, 합친 결과가 완성본과 일치`);
 
     const parameters = { type: "object", properties: { label: { type: "string" } }, required: ["label"] };
     request.tools.push({ name: "readProbe", description: "Read a fresh verification value for a label.", parameters });

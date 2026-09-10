@@ -25,6 +25,8 @@ import type { RequestPlanReview } from "./plan-review.ts";
 export type AgentEvent =
   | { type: "mode-changed"; mode: AgentMode; reason: "plan-approved" | "user" }
   | { type: "assistant-text"; text: string }
+  // 스트리밍 응답의 텍스트 조각이다. 같은 스텝의 완성 텍스트는 이어서 assistant-text 또는 turn의 반환값으로 다시 온다.
+  | { type: "assistant-delta"; text: string }
   | { type: "tool-start"; name: string; arguments: string }
   | { type: "tool-end"; name: string; durationMs: number; content: import("./llm-types.ts").ToolContent; isError?: boolean }
   | { type: "turn-interrupt-requested" }
@@ -202,7 +204,9 @@ export function createAgent(options: AgentOptions): Agent {
       }
     }
     const context = await assembleContext(session);
-    const result = await recordLLM(adapter, history, scope, "step", active?.signal).generate(context);
+    // 작업 스텝의 텍스트 조각만 화면으로 흘린다. 툴 실행과 기록은 아래의 완성 응답을 기준으로 한다.
+    const result = await recordLLM(adapter, history, scope, "step", active?.signal,
+      onEvent ? { onTextDelta: (text) => onEvent({ type: "assistant-delta", text }) } : {}).generate(context);
     // 잘린 응답은 model-response 원본 로그에만 남기고 재전송용 대화에는 넣지 않는다.
     if (result.stopReason !== "max-tokens") await rememberMessage(session, result.message, scope);
 

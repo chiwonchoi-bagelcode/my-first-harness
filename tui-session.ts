@@ -139,6 +139,32 @@ export function createTuiSession(options: TuiOptions) {
   function append(kind: TuiEntry["kind"], text: string) {
     if (!state.closed) update({ entries: [...state.entries, { kind, text }] });
   }
+  // 스트리밍 중인 답변 항목의 위치와 지금까지 받은 텍스트다. 완성본이 오면 비교해 같은 답변을 두 번 넣지 않는다.
+  let streaming: { index: number; text: string } | undefined;
+  // 텍스트 조각을 진행 중인 답변 항목에 이어 붙인다. 첫 조각이면 새 항목을 만들고 상태를 수신 중으로 바꾼다.
+  function appendDelta(text: string) {
+    if (state.closed) return;
+    if (!streaming) {
+      streaming = { index: state.entries.length, text };
+      update({ entries: [...state.entries, { kind: "assistant", text }], status: "응답 수신 중" });
+      return;
+    }
+    streaming.text += text;
+    const entries = [...state.entries];
+    entries[streaming.index] = { kind: "assistant", text: streaming.text };
+    update({ entries });
+  }
+  // 완성된 답변을 표시한다. 스트리밍 항목이 있으면 그 항목을 확정하고 내용이 다를 때만 완성본으로 바꾼다.
+  function showAnswer(text: string) {
+    const live = streaming;
+    streaming = undefined;
+    if (!live) { if (text) append("assistant", text); return; }
+    // 중단된 턴은 빈 완성본을 돌려주므로 그때까지 받은 조각을 지우지 않는다.
+    if (state.closed || !text || text === live.text) return;
+    const entries = [...state.entries];
+    entries[live.index] = { kind: "assistant", text };
+    update({ entries });
+  }
   // 새 세션의 시작 기록과 초기 스냅샷을 보존한다.
   async function start() {
     await history.append({ sessionId: session.id }, { type: "session-start", workspaceDirectory: session.workspaceDirectory, system: session.system });
@@ -147,12 +173,15 @@ export function createTuiSession(options: TuiOptions) {
   // 코어의 진행 이벤트를 화면 항목과 상태 표시로 변환한다.
   function onEvent(event: AgentEvent) {
     if (state.closed) return;
+    if (event.type === "assistant-delta") { appendDelta(event.text); return; }
+    if (event.type === "assistant-text") { showAnswer(event.text); return; }
+    // 조각이 아닌 이벤트가 오면 진행 중이던 답변 항목은 그대로 확정한다. 중단·출력 한도 복구 뒤에도 받은 글은 남는다.
+    streaming = undefined;
     switch (event.type) {
       case "mode-changed":
         if (event.reason === "user" && state.pendingMode) append("notice", `모드 적용: ${event.mode}`);
         update({ mode: event.mode, pendingMode: undefined });
         break;
-      case "assistant-text": append("assistant", event.text); break;
       case "tool-start":
         append("tool", `${event.name} ${event.arguments}`);
         update({ status: `실행 중 · ${event.name}` });
@@ -247,10 +276,10 @@ export function createTuiSession(options: TuiOptions) {
           const output = await activeTurn;
           if (!state.closed) {
             await saveSession(session, paths);
-            if (output) append("assistant", output);
+            showAnswer(output);
           }
         } catch (error) { failedTurn = true; throw error; }
-        finally { activeTurn = undefined; stopping = false; }
+        finally { activeTurn = undefined; stopping = false; streaming = undefined; }
       }
     } catch (error) {
       append("error", error instanceof Error ? error.message : String(error));

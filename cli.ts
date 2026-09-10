@@ -77,11 +77,38 @@ export function createCli() {
   };
 }
 
+// 스트리밍으로 이미 화면에 쓴 답변 조각을 모아 둔다. 완성본이 오면 같은 내용을 두 번 찍지 않기 위해 비교한다.
+let streamed = "";
+
+// 진행 중인 스트리밍 줄을 마감하고 지금까지 쓴 텍스트를 돌려준다. 쓴 것이 없으면 아무것도 출력하지 않는다.
+function endStream() {
+  const shown = streamed;
+  if (shown) {
+    streamed = "";
+    process.stdout.write("\n");
+  }
+  return shown;
+}
+
+// 완성된 답변을 표시한다. 스트리밍으로 같은 내용을 이미 썼으면 줄만 마감하고, 다르면 완성본을 다시 쓴다.
+export function renderCliAnswer(text: string) {
+  const shown = endStream();
+  if (!shown) console.log(text);
+  else if (text && text !== shown) console.log(text);
+}
+
 // 코어 진행 이벤트를 기존 CLI 출력 형식으로 표시한다.
 export function renderCliEvent(event: AgentEvent) {
+  // 조각은 줄바꿈 없이 이어 쓰고, 다른 이벤트가 오면 먼저 스트리밍 줄을 마감한다.
+  if (event.type === "assistant-delta") {
+    streamed += event.text;
+    process.stdout.write(event.text);
+    return;
+  }
+  if (event.type === "assistant-text") { renderCliAnswer(event.text); return; }
+  endStream();
   switch (event.type) {
     case "mode-changed": console.log(`[mode] ${event.mode} · ${event.reason === "plan-approved" ? "계획 승인됨" : "사용자 전환 적용"}`); break;
-    case "assistant-text": console.log(event.text); break;
     case "tool-start": console.log(`[tool] ${event.name} ${event.arguments}`); break;
     case "compaction-start": console.log("[context] 대화를 요약합니다..."); break;
     case "compaction-end": console.log(`[context] 압축 완료: ${event.beforeChars} → ${event.afterChars}자`); break;
@@ -222,11 +249,14 @@ export async function runCli(options: CliOptions) {
 
       const images = pendingImages;
       pendingImages = [];
-      const output = await agent.turn(session, input, images);
+      let output: string;
+      // 실패해도 스트리밍 중이던 줄을 마감해 뒤따르는 오류 출력이 같은 줄에 붙지 않게 한다.
+      try { output = await agent.turn(session, input, images); }
+      catch (error) { endStream(); throw error; }
 
       await saveSession(session, paths);
 
-      console.log(output);
+      renderCliAnswer(output);
     }
   } catch (error) {
     // Ctrl+C로 question 또는 실행 중 명령이 취소된 오류는 중단 처리에서 마무리한다.

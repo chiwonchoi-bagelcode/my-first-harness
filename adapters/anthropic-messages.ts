@@ -13,6 +13,8 @@ type Config = {
   auth?: "api-key" | "bearer";
   maxOutputTokens?: number;
   supportsImages?: boolean;
+  // 참이면 stream: true로 요청해 SSE 이벤트를 받고, 텍스트 조각은 관찰자의 onTextDelta로 전달한다.
+  stream?: boolean;
 };
 
 // 지원하는 assistant 블록. thinking은 표시하지 않고 재전송용으로만 보관한다.
@@ -146,6 +148,7 @@ export function createAnthropicMessagesAdapter(config: Config): LLMAdapter {
         body: {
           model: config.model,
           max_tokens: request.maxOutputTokens ?? config.maxOutputTokens ?? 4096,
+          ...(config.stream ? { stream: true } : {}),
           ...(request.system ? { system: request.system } : {}),
           messages: toMessages(request.messages, config),
           ...(request.tools.length ? { tools: request.tools.map((tool) => ({
@@ -155,7 +158,7 @@ export function createAnthropicMessagesAdapter(config: Config): LLMAdapter {
       }, {
         "Content-Type": "application/json", "anthropic-version": "2023-06-01",
         ...(config.auth === "bearer" ? { Authorization: `Bearer ${config.apiKey}` } : { "x-api-key": config.apiKey }),
-      }, observer, false, signal);
+      }, observer, config.stream ?? false, signal);
       if (!response.ok || !isObject(result) || result.error || result.type !== "message" || result.role !== "assistant") {
         const error = isObject(result) && isObject(result.error) ? result.error.message : undefined;
         throw new Error(typeof error === "string" ? error : `LLM 요청 실패: HTTP ${response.status} (Anthropic 메시지 형식 확인 필요)`);

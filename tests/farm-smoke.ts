@@ -31,10 +31,14 @@ async function main() {
     const request: LLMRequest = { system: "Follow the user's request. Keep answers short.", tools: [], messages: [
       { role: "user", content: [{ type: "text", text: "Reply with exactly pong." }] },
     ] };
-    const first = await adapter.generate(request);
+    // 텍스트 조각이 도착 순서대로 콜백에 오고 합치면 완성본과 같은지 확인한다.
+    const deltas: string[] = [];
+    const first = await adapter.generate(request, { async onRequest() {}, async onResponse() {}, onTextDelta: (text) => { deltas.push(text); } });
     assert.equal(first.stopReason, "stop");
     assert.match(textOf(first.message), /pong/i);
-    console.log("PASS: 텍스트 응답");
+    assert.ok(deltas.length > 0, "SSE 텍스트 조각이 onTextDelta로 전달되어야 합니다.");
+    assert.equal(deltas.join(""), textOf(first.message), "조각을 합친 결과가 완성 텍스트와 같아야 합니다.");
+    console.log(`PASS: 텍스트 응답 (스트리밍 조각 ${deltas.length}개, 합친 결과가 완성본과 일치)`);
     const parameters = { type: "object", properties: { label: { type: "string" } }, required: ["label"] };
     request.tools = [{ name: "readProbe", description: "Read a fresh verification value for the given label.", parameters }];
     request.messages.push(first.message, { role: "user", content: [{ type: "text", text:

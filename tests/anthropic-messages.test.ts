@@ -15,6 +15,15 @@ const reply = (content: unknown[] = [{ type: "text", text: "답변" }], stop_rea
 // 모델의 객체 형태 인자를 가진 모의 tool_use 블록을 만든다.
 const call = (id = "a", input: unknown = { amount: 3 }) => ({ type: "tool_use", id, name: "increase", input });
 const thinking = { type: "thinking", thinking: "test reasoning", signature: "test-signature" };
+// 모의 Messages SSE 응답을 만든다. model-config의 haiku는 stream을 켜므로 이벤트 순서대로 텍스트 블록 하나를 보낸다.
+const sseReply = (text = "답변", stop_reason = "end_turn") => new Response([
+  { type: "message_start", message: { type: "message", role: "assistant", model: config.model, content: [], stop_reason: null, usage: { input_tokens: 1, output_tokens: 1 } } },
+  { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+  { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
+  { type: "content_block_stop", index: 0 },
+  { type: "message_delta", delta: { stop_reason, stop_sequence: null }, usage: { output_tokens: 3 } },
+  { type: "message_stop" },
+].map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
 
 test("실제 기본 툴 전체에 객체 스키마가 있으며 인자 없는 툴도 Anthropic 필수 type을 보낸다", async (t) => {
   const definitions = builtinToolDefinitions();
@@ -188,11 +197,15 @@ test("모델 선택은 Luna/Haiku별 주소·모델·인증·기본 출력 한�
     if (url.endsWith("/responses")) {
       assert.equal(body.model, "gpt-5.6-luna");
       assert.equal(body.max_output_tokens, undefined);
-      return Response.json({ status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }] });
+      // AIProxy Luna도 stream을 켜므로 완료 이벤트 하나짜리 SSE로 답한다.
+      assert.equal(body.stream, true);
+      const completed = { type: "response.completed", response: { status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }] } };
+      return new Response(`event: response.completed\ndata: ${JSON.stringify(completed)}\n\n`, { headers: { "content-type": "text/event-stream" } });
     }
     assert.equal(body.model, config.model);
     assert.equal(body.max_tokens, 32_000);
-    return reply();
+    assert.equal(body.stream, true);
+    return sseReply();
   });
   await createModelAdapter("luna", "test-token").generate(empty);
   await createModelAdapter("haiku", "test-token").generate(empty);
@@ -205,7 +218,7 @@ test("Haiku 기본 한도보다 요청별 한도를 우선하며 다음 요청�
   const limits: number[] = [];
   t.mock.method(globalThis, "fetch", async (_url: any, init: any) => {
     limits.push(JSON.parse(init.body).max_tokens);
-    return reply();
+    return sseReply();
   });
   const adapter = createModelAdapter("haiku", "test-token");
   await adapter.generate({ ...empty, maxOutputTokens: 2048 });

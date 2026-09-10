@@ -15,6 +15,9 @@ function summarizeRequest(request: LLMRequest): RequestSummary {
   };
 }
 
+// 기록과 무관하게 호출자가 함께 받을 수 있는 진행 콜백이다. 텍스트 조각은 화면 표시용이며 기록에는 넣지 않는다.
+export type RecordOptions = { onTextDelta?: (text: string) => void };
+
 // 한 작업 범위에 어댑터를 묶어 일반·요약·중첩 호출 모두 같은 경로로 기록한다.
 export function recordLLM(
   adapter: LLMAdapter,
@@ -22,6 +25,7 @@ export function recordLLM(
   scope: HistoryScope,
   purpose: CallPurpose,
   signal?: AbortSignal,
+  options: RecordOptions = {},
 ): LLMAdapter {
   return {
     supportsImages: adapter.supportsImages,
@@ -41,6 +45,8 @@ export function recordLLM(
           onRequest: (wire) => history.append(scope, { type: "model-request", callId, request: wire }),
           // 파싱·정규화 실패에도 응답과 사용량이 남도록 먼저 기록한다.
           onResponse: (wire) => history.append(scope, { type: "model-response", callId, response: wire }),
+          // 스트리밍 텍스트 조각은 호출자가 원할 때만 전달한다. 요약·중첩 호출은 넘기지 않아 화면에 섞이지 않는다.
+          ...(options.onTextDelta ? { onTextDelta: options.onTextDelta } : {}),
         }, signal);
         signal?.throwIfAborted();
       } catch (error) {

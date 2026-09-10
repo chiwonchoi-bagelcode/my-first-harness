@@ -19,21 +19,28 @@ async function main() {
   globalThis.fetch = async (url, init) => {
     const body = JSON.parse(String(init?.body));
     assert.equal(body.store, false);
+    assert.equal(body.stream, true);
     assert.equal(body.previous_response_id, undefined);
     replayedEncryptedItems += body.input.filter((item: any) => item.type === "reasoning" && item.encrypted_content).length;
     const response = await originalFetch(url, { ...init, signal: AbortSignal.timeout(60_000) });
-    const data = await response.clone().json();
+    // 본문은 SSE다. 진단 출력용으로만 이벤트를 나눠 완료 응답과 조각 수를 읽는다. 어댑터는 원본 응답을 그대로 읽는다.
+    const events = (await response.clone().text()).split(/\r?\n\r?\n/)
+      .map((block) => block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n"))
+      .filter((payload) => payload && payload !== "[DONE]").map((payload) => { try { return JSON.parse(payload); } catch { return {}; } });
+    const data = events.find((event: any) => event.type === "response.completed")?.response ?? events.at(-1) ?? {};
     const encrypted = (data.output ?? []).filter((item: any) => item.type === "reasoning" && item.encrypted_content).length;
     encryptedItems += encrypted;
-    console.log(JSON.stringify({ request: ++requests, http: response.status, status: data.status, model: data.model, effort: data.reasoning?.effort,
-      outputTypes: (data.output ?? []).map((item: any) => item.type), encryptedItems: encrypted }));
+    console.log(JSON.stringify({ request: ++requests, http: response.status, contentType: response.headers.get("content-type"), status: data.status,
+      model: data.model, effort: data.reasoning?.effort, outputTypes: (data.output ?? []).map((item: any) => item.type), encryptedItems: encrypted,
+      textDeltaEvents: events.filter((event: any) => event.type === "response.output_text.delta").length }));
     if (response.ok) assert.match(data.model, /^gpt-5\.6-luna(?:-|$)/);
     return response;
   };
   try {
+    // model-config.ts의 luna 연결과 같은 stream 설정으로 AIProxy가 SSE를 통과시키는지 확인한다.
     const adapter = createResponsesAdapter({
       provider: "bagel-openai", baseURL: "https://aiproxy-api.backoffice.bagelgames.com/openai/v1",
-      model: "gpt-5.6-luna", apiKey: token, reasoningEffort: checkReasoning ? "high" : undefined,
+      model: "gpt-5.6-luna", apiKey: token, stream: true, reasoningEffort: checkReasoning ? "high" : undefined,
     });
     const request: LLMRequest = {
       system: "Follow the user's request. Keep answers short.",
@@ -42,9 +49,14 @@ async function main() {
         : "Reply with exactly pong." }] }],
       tools: [], maxOutputTokens: 4096,
     };
-    const first = await adapter.generate(request);
+    // 텍스트 조각이 도착 순서대로 콜백에 오고 합치면 완성본과 같은지 확인한다.
+    const deltas: string[] = [];
+    const first = await adapter.generate(request, { async onRequest() {}, async onResponse() {}, onTextDelta: (text) => { deltas.push(text); } });
     assert.equal(first.stopReason, "stop");
     assert.match(textOf(first.message), checkReasoning ? /213528/ : /pong/i);
+    assert.ok(deltas.length > 0, "SSE 텍스트 조각이 onTextDelta로 전달되어야 합니다.");
+    assert.equal(deltas.join(""), textOf(first.message), "조각을 합친 결과가 완성 텍스트와 같아야 합니다.");
+    console.log(`PASS: 스트리밍 조각 ${deltas.length}개 수신, 합친 결과가 완성본과 일치`);
 
     const parameters = { type: "object", properties: { label: { type: "string" } }, required: ["label"] };
     request.tools = [{ name: "readProbe", description: "Read a fresh verification value for the given label.", parameters }];

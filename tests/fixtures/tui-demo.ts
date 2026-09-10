@@ -21,9 +21,17 @@ toolManager.register({ name: "probe", description: "화면 검증용", parameter
 // 네트워크 요청 없이 실제 agent의 모델·툴 반복과 화면 출력을 실행한다.
 const adapter: LLMAdapter = {
   supportsImages: true,
-  async generate(request) {
+  async generate(request, observer) {
     if (request.maxOutputTokens) return { stopReason: "stop", message: { role: "assistant", content: [{ type: "text", text: "검증 결과는 42입니다." }] } };
-    if (request.messages.at(-1)?.role === "tool") return { stopReason: "stop", message: { role: "assistant", content: [{ type: "text", text: "확인 완료: 42\n한글 표시와 툴 실행이 정상입니다." }] } };
+    if (request.messages.at(-1)?.role === "tool") {
+      // 실제 SSE처럼 조각을 시간차로 흘려 화면이 이어 쓰는지 확인한다. 완성본은 조각을 합친 것과 같다.
+      const answer = "확인 완료: 42\n한글 표시와 툴 실행이 정상입니다.";
+      for (const piece of answer.match(/.{1,4}/gs) ?? []) {
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        observer?.onTextDelta?.(piece);
+      }
+      return { stopReason: "stop", message: { role: "assistant", content: [{ type: "text", text: answer }] } };
+    }
     return { stopReason: "tool-calls", message: { role: "assistant", content: [
       { type: "text", text: "확인하겠습니다. 도구를 실행합니다." },
       { type: "tool-call", id: `probe-${request.messages.length}`, name: "probe", arguments: "{}" },

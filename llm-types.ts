@@ -114,6 +114,8 @@ export type WireResponse = {
 export type LLMObserver = {
   onRequest(request: WireRequest): Promise<void>;
   onResponse(response: WireResponse): Promise<void>;
+  // 스트리밍 응답의 텍스트 조각이 도착하는 즉시 받는 동기 콜백이다. 없으면 조각은 화면에 전달되지 않고 완성본만 반환된다.
+  onTextDelta?(text: string): void;
 };
 
 // 어댑터가 반환하는 공통 assistant 메시지, 종료 이유와 사용량.
