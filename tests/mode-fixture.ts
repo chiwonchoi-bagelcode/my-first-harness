@@ -12,7 +12,9 @@ export function modeFixture() {
     setPermissionMode(next: PermissionMode) { permissionMode = next; },
     // 현재 모의 모드를 반환한다.
     getMode: () => mode,
-    // 화면에서 선택한 모드를 보관한다.
-    setMode(next: AgentMode) { mode = next; },
+    // 대체 코어에는 턴이 없으므로 대기 중인 모드도 없다.
+    getPendingMode: () => undefined,
+    // 화면에서 선택한 모드를 보관하고 즉시 적용으로 보고한다.
+    setMode(next: AgentMode) { mode = next; return "applied" as const; },
   };
 }

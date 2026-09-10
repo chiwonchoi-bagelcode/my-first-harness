@@ -1,6 +1,7 @@
 import type { LLMObserver, WireRequest } from "../llm-types.ts";
 import { usageOf } from "./usage.ts";
 import { readResponsesStream } from "./responses-stream.ts";
+import { omitImageData } from "./wire-log.ts";
 
 // 인증 헤더는 전송에만 사용하고 요청 본문·응답·사용량은 해석 전에 관찰자에게 전달한다.
 export async function requestJSON(
@@ -10,9 +11,12 @@ export async function requestJSON(
   stream = false,
   signal?: AbortSignal,
 ) {
-  // 관찰자 대기 중 원래 객체가 바뀌어도 기록과 실제 전송 내용이 같도록 먼저 직렬화한다.
+  // 관찰자 대기 중 원래 객체가 바뀌어도 기록이 실제 전송 내용을 따르도록 먼저 직렬화한다.
   const body = JSON.stringify(request.body);
-  await observer?.onRequest({ ...request, body: JSON.parse(body) });
+  // 기록용 복사본에서만 이미지 바이트를 크기·해시 설명으로 바꾼다. 원본 바이트는 message 이벤트와 attachments 파일에 한 번 있고, 요청마다 반복 저장하지 않는다.
+  const logged = omitImageData(request.api, JSON.parse(body));
+  await observer?.onRequest({ ...request, body: logged.body,
+    ...(logged.imageDataOmitted ? { imageDataOmitted: logged.imageDataOmitted } : {}) });
   signal?.throwIfAborted();
   const response = await fetch(request.url, { method: "POST", headers, body, signal });
   // Farm의 text/plain SSE도 읽고, 실패 직전까지 파싱한 이벤트를 응답 기록에 남긴다.

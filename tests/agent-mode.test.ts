@@ -35,7 +35,6 @@ test("실제 Agent는 모드 지침을 교체하고 plan 쓰기를 거부한 뒤
       // 매 턴 파일 쓰기 요청 하나와 최종 응답을 차례로 반환한다.
       async generate(request) {
         requests.push(structuredClone(request));
-        assert.throws(() => agent.setMode("edit"), /턴/);
         return requests.length % 2 === 1
           ? { stopReason: "tool-calls", message: { role: "assistant", content: [
             { type: "tool-call", id: String(requests.length), name: "writeTextFile", arguments: "{}" },

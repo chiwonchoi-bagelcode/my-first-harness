@@ -1,8 +1,19 @@
 import { randomUUID } from "node:crypto";
-import type { CallPurpose, HistoryScope, HistorySink } from "./execution-history.ts";
-import type { LLMAdapter } from "./llm-types.ts";
+import type { CallPurpose, HistoryScope, HistorySink, RequestSummary } from "./execution-history.ts";
+import type { LLMAdapter, LLMRequest } from "./llm-types.ts";
 import { projectRequestImages } from "./image-request.ts";
-import { checkImageInput } from "./image-content.ts";
+import { checkImageInput, imagesOf } from "./image-content.ts";
+import { estimateRequestTokens } from "./token-budget.ts";
+
+// 요청 전체 대신 크기와 구성만 남긴다. 같은 대화가 스텝마다 반복 저장되지 않게 하며, 전송 본문은 model-request가 담당한다.
+function summarizeRequest(request: LLMRequest): RequestSummary {
+  return {
+    systemChars: request.system.length, messageCount: request.messages.length,
+    imageCount: imagesOf(request.messages).length, toolNames: request.tools.map((tool) => tool.name),
+    estimatedTokens: estimateRequestTokens(request),
+    ...(request.maxOutputTokens !== undefined ? { maxOutputTokens: request.maxOutputTokens } : {}),
+  };
+}
 
 // 한 작업 범위에 어댑터를 묶어 일반·요약·중첩 호출 모두 같은 경로로 기록한다.
 export function recordLLM(
@@ -20,7 +31,7 @@ export function recordLLM(
       signal?.throwIfAborted();
       const callId = randomUUID();
       const started = performance.now();
-      await history.append(scope, { type: "model-start", callId, purpose, request });
+      await history.append(scope, { type: "model-start", callId, purpose, request: summarizeRequest(request) });
       let result;
       try {
         checkImageInput(request.messages, adapter.supportsImages, false);

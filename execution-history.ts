@@ -2,17 +2,22 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, open } from "node:fs/promises";
 import { join } from "node:path";
 import type { HarnessPaths } from "./harness-paths.ts";
-import type { LLMRequest, Message, StopReason, ToolContent, WireRequest, WireResponse } from "./llm-types.ts";
+import type { Message, StopReason, ToolContent, WireRequest, WireResponse } from "./llm-types.ts";
 
 // 세션·턴·스텝과 중첩 모델 호출을 발생시킨 툴을 연결하는 식별 정보.
 export type HistoryScope = { sessionId: string; turnId?: string; step?: number; parentToolCallId?: string };
 // 일반 작업, 압축 요약, 다른 LLM에게 묻기의 사용량을 구분한다.
 export type CallPurpose = "step" | "compaction" | "other-llm";
+// 요청 본문 대신 남기는 크기·구성 요약이다. 실제 전송 본문은 model-request에, 메시지 원문은 message 이벤트에 있다.
+export type RequestSummary = {
+  systemChars: number; messageCount: number; imageCount: number; toolNames: string[];
+  estimatedTokens: number; maxOutputTokens?: number;
+};
 // 메시지 원문과 실행 과정을 저장하지만 상태 복원 명령으로 사용하지 않는 이벤트.
 export type HistoryEvent =
   | { type: "instructions-reloaded"; projectInstructions: string }
   | { type: "message"; message: Message; source?: "harness" }
-  | { type: "model-start"; callId: string; purpose: CallPurpose; request: LLMRequest }
+  | { type: "model-start"; callId: string; purpose: CallPurpose; request: RequestSummary }
   | { type: "model-request"; callId: string; request: WireRequest }
   | { type: "model-response"; callId: string; response: WireResponse }
   | { type: "model-end"; callId: string; stopReason: StopReason; durationMs: number }

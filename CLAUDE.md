@@ -77,7 +77,7 @@ Compaction saves the session *before* summarizing so a failed summary API call s
 Both live in `~/.my-first-harness/projects/<basename>-<sha256[0:12]>/` (per workspace path, see `harness-paths.ts`):
 
 - `<session-id>.json` — the resumable `Session` snapshot (`version: 3`, strictly validated on load, no back-compat path).
-- `<session-id>.jsonl` — append-only `ExecutionHistory`: every message, the real wire request/response bodies, tool start/end, turn boundaries, compaction snapshots. Known secrets and auth headers are redacted. **This log is evidence, never a state-restore mechanism.**
+- `<session-id>.jsonl` — append-only `ExecutionHistory`: every message, the real wire request/response bodies, tool start/end, turn boundaries, compaction snapshots. Known secrets and auth headers are redacted. In `model-request` bodies, image bytes are replaced by a `[image data omitted from log: <type>, <bytes>, sha256 …]` note (`adapters/wire-log.ts`), and `model-start` carries only a request summary (message count, image count, tool names, estimated tokens) — the bytes live once in the `message` event and in `attachments/<sha256>.<ext>`. **This log is evidence, never a state-restore mechanism.**
 
 `recorded-llm.ts` wraps any adapter so ordinary steps, compaction summaries, and nested "ask another LLM" calls all record through one path, tagged by `HistoryScope` (`sessionId`/`turnId`/`step`/`parentToolCallId`).
 
@@ -101,7 +101,7 @@ The counter's increment and read are two separate tools on purpose — it's an e
 - `AgentMode` (`plan` | `edit`, `agent-mode.ts`) swaps the mode instructions in the system prompt **and** layers deny rules onto the policy (plan denies `writeTextFile`/`editTextFile`).
 - `PermissionMode` (`default` | `yolo`, `permissions.ts`) bypasses the gate entirely when `yolo`.
 - `PermissionPolicy` rules match an exact `toolName` or an `ownerPrefix`, evaluated deny → ask → allow. `INTERACTIVE_PERMISSIONS` asks for `runCommand` and every `mcp:*` tool.
-- Neither mode can change while a turn is `active`, so an in-flight approval can't be retroactively bypassed.
+- Both can change while a turn is `active` (TUI: Shift+Tab works during execution and approval prompts). `PermissionMode` applies from the next tool call because the policy is computed per call; an approval prompt already open is never auto-answered. `AgentMode` is queued (`getPendingMode()`) and applied at the start of the next step, with a `[하네스 알림]` user message telling the model why, or at turn end if no step follows — the same boundary rule as plan approval. Re-selecting the current mode cancels the queue.
 - `exit_plan_mode` is registered by the agent itself. Approval sets `pendingPlanExit`; the mode actually flips at the **start of the next step**, never mid tool batch — approving one tool call is not plan approval.
 
 ### UI layer

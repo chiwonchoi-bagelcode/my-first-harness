@@ -130,10 +130,9 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
     }
     if (state.planReview && key.escape) { controller.answerPlanReview({ decision: "cancel" }); return; }
     if (state.busy && key.escape) { controller.interrupt(); return; }
+    // 실행·승인 대기 중에도 모드를 바꿀 수 있다. 권한은 다음 툴 호출부터, 모드는 다음 스텝부터 적용된다.
     if (key.shift && key.tab) {
-      if (!state.busy && !picker && !extensionPicker) {
-        void controller.submit(`/mode ${state.permissionMode === "yolo" ? "edit" : state.mode === "edit" ? "plan" : "yolo"}`);
-      }
+      if (!picker && !extensionPicker) void controller.cycleMode();
       return;
     }
     if (extensionPicker) {
@@ -181,7 +180,7 @@ export function TuiScreen({ controller, model, supportsImages = false, onQuit }:
   }
 
   return h(Box, { flexDirection: "column", width: columns, height: screenRows },
-    h(Text, { bold: true, color: state.permissionMode === "yolo" ? "red" : "cyan", wrap: "truncate-end" }, `My First Harness · ${model} · [${state.mode}]${state.permissionMode === "yolo" ? " [YOLO]" : ""} · ${state.sessionId}`),
+    h(Text, { bold: true, color: state.permissionMode === "yolo" ? "red" : "cyan", wrap: "truncate-end" }, `My First Harness · ${model} · [${state.mode}${state.pendingMode ? ` → ${state.pendingMode} (다음 스텝)` : ""}]${state.permissionMode === "yolo" ? " [YOLO]" : ""} · ${state.sessionId}`),
     h(Text, { dimColor: true }, "─".repeat(Math.max(1, columns))),
     extensionPicker ? h(Box, { flexDirection: "column", height: feedRows, flexShrink: 0, overflow: "hidden" },
       h(Text, { bold: true, color: "cyan", wrap: "truncate-end" }, `${extensionPicker.kind} · 프로젝트 설정 · 다음 요청부터 반영`),

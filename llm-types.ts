@@ -98,6 +98,8 @@ export type WireRequest = {
   model: string;
   url: string;
   body: unknown;
+  // 기록용 본문에서 설명 문자열로 바꾼 이미지 수다. 실제 전송 본문은 바뀌지 않는다.
+  imageDataOmitted?: number;
 };
 
 // 변환 실패 응답도 분석할 수 있도록 보존하는 HTTP 결과와 사용량.

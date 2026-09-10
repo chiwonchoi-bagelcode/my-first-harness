@@ -45,6 +45,8 @@ export type TuiEntry = { kind: "user" | "assistant" | "tool" | "notice" | "error
 export type TuiState = {
   sessionId: string;
   mode: AgentMode;
+  // 턴 중에 요청돼 다음 스텝을 기다리는 모드다.
+  pendingMode?: AgentMode;
   permissionMode: PermissionMode;
   entries: TuiEntry[];
   pendingImages: number;
@@ -80,7 +82,7 @@ export function createTuiSession(options: TuiOptions) {
   let closePromise: Promise<void> | undefined;
   let activeTurn: Promise<string> | undefined;
   let stopping = false;
-  let state: TuiState = { sessionId: session.id, mode: agent.getMode(), permissionMode: agent.getPermissionMode(), entries: [], pendingImages: 0, busy: false, status: "대기 중", closed: false };
+  let state: TuiState = { sessionId: session.id, mode: agent.getMode(), pendingMode: agent.getPendingMode(), permissionMode: agent.getPermissionMode(), entries: [], pendingImages: 0, busy: false, status: "대기 중", closed: false };
   const listeners = new Set<() => void>();
   let finishApproval: ((approved: ApprovalAnswer) => void) | undefined;
   let finishPlanReview: ((answer: PlanReviewAnswer) => void) | undefined;
@@ -146,7 +148,10 @@ export function createTuiSession(options: TuiOptions) {
   function onEvent(event: AgentEvent) {
     if (state.closed) return;
     switch (event.type) {
-      case "mode-changed": update({ mode: event.mode }); break;
+      case "mode-changed":
+        if (event.reason === "user" && state.pendingMode) append("notice", `모드 적용: ${event.mode}`);
+        update({ mode: event.mode, pendingMode: undefined });
+        break;
       case "assistant-text": append("assistant", event.text); break;
       case "tool-start":
         append("tool", `${event.name} ${event.arguments}`);
@@ -194,11 +199,7 @@ export function createTuiSession(options: TuiOptions) {
           update({ permissionMode: agent.getPermissionMode() });
           append("notice", agent.getPermissionMode() === "yolo" ? "YOLO: 모든 툴 권한 검사 우회 (plan의 쓰기 차단 포함)" : "권한 정책 및 세션 승인 적용");
         } else if (name === "/mode") {
-          const target = trimmed.slice(name.length).trim();
-          agent.setMode(target === "yolo" ? "edit" : parseMode(target));
-          agent.setPermissionMode(target === "yolo" ? "yolo" : "default");
-          update({ mode: agent.getMode(), permissionMode: agent.getPermissionMode() });
-          append("notice", target === "yolo" ? "YOLO: edit + 모든 툴 권한 검사 우회" : `모드: ${agent.getMode()} · 일반 권한 정책`);
+          changeMode(trimmed.slice(name.length).trim());
         } else if (name === "/reload-instructions") {
           session.projectInstructions = readProjectInstructions(paths.workspaceDirectory);
           await history.append({ sessionId: session.id }, { type: "instructions-reloaded", projectInstructions: session.projectInstructions });
@@ -257,6 +258,17 @@ export function createTuiSession(options: TuiOptions) {
       if (!state.closed) update({ busy: false, status: failedTurn ? "실행 실패 · /new 또는 /resume" : "대기 중" });
     }
   }
+  // /mode와 Shift+Tab이 공유한다. 권한은 즉시 바뀌고, 모드는 턴 중이면 다음 스텝에 반영된다. busy를 바꾸지 않으므로 실행·승인 대기 중에도 부를 수 있다.
+  function changeMode(target: string) {
+    const mode = target === "yolo" ? "edit" : parseMode(target);
+    const result = agent.setMode(mode);
+    agent.setPermissionMode(target === "yolo" ? "yolo" : "default");
+    update({ mode: agent.getMode(), pendingMode: agent.getPendingMode(), permissionMode: agent.getPermissionMode() });
+    const modeText = result === "queued" ? `${mode} (다음 스텝부터)` : agent.getMode();
+    append("notice", target === "yolo"
+      ? `YOLO: 모든 툴 권한 검사 우회 · 다음 툴 호출부터${result === "queued" ? ` · 모드 ${modeText}` : ""}`
+      : `모드: ${modeText} · 일반 권한 정책`);
+  }
   // 에이전트가 실행 중일 때는 토글을 거부하고 저장·연결 중에도 중복 입력을 막는다.
   async function toggleExtension(name: string) {
     const picker = state.extensionPicker;
@@ -297,6 +309,18 @@ export function createTuiSession(options: TuiOptions) {
     answerPlanReview(answer: PlanReviewAnswer) { finishPlanReview?.(answer); },
     // 승인 화면의 키 입력은 일반 사용자 메시지로 전달하지 않는다.
     answerApproval(approved: ApprovalAnswer) { finishApproval?.(approved); },
+    // Shift+Tab: edit → plan → YOLO → edit. 실행·승인 대기 중에도 동작하며 대기 중인 모드가 있으면 그것을 기준으로 다음 값을 고른다.
+    async cycleMode() {
+      if (state.closed || state.resumePicker || state.extensionPicker) return;
+      const effective = state.pendingMode ?? state.mode;
+      const target = state.permissionMode === "yolo" ? "edit" : effective === "edit" ? "plan" : "yolo";
+      try {
+        await history.append({ sessionId: session.id }, { type: "command", input: `/mode ${target}` });
+        changeMode(target);
+      } catch (error) {
+        append("error", error instanceof Error ? error.message : String(error));
+      }
+    },
     // 중단 완료 전까지 busy를 유지하며 다음 요청과 현재 턴이 겹치지 않게 한다.
     interrupt() { if (activeTurn && agent.interrupt()) { stopping = true; update({ status: "중단 요청됨 · 실행 정리 중" }); } },
     // 확장 목록을 닫아도 변경한 프로젝트 설정은 유지한다.

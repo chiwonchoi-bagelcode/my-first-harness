@@ -98,12 +98,14 @@ test("모드 명령과 Shift+Tab이 연결되고 입력 초안과 세션 전환�
   assert.equal(controller.getSnapshot().mode, "plan");
   await controller.submit("/mode edit");
   assert.equal(controller.getSnapshot().mode, "edit");
+  // 승인 대기 중에도 Shift+Tab은 동작하지만, 열려 있는 승인 질문을 대신 답하지는 않는다.
   const pending = controller.requestApproval({ toolName: "runCommand", args: {} });
   await settle();
   view.stdin.write("\x1b[Z"); await settle();
-  assert.equal(controller.getSnapshot().mode, "edit");
+  assert.equal(controller.getSnapshot().mode, "plan");
+  assert.deepEqual(controller.getSnapshot().approval, { toolName: "runCommand", args: {} });
   controller.answerApproval(false);
-  await pending;
+  assert.equal(await pending, false);
   await controller.close();
 });
 

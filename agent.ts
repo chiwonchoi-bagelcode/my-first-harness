@@ -23,7 +23,7 @@ import type { RequestPlanReview } from "./plan-review.ts";
 
 // 화면에 표시할 진행 정보다. 원문 보존용 HistoryEvent와는 별개다.
 export type AgentEvent =
-  | { type: "mode-changed"; mode: AgentMode }
+  | { type: "mode-changed"; mode: AgentMode; reason: "plan-approved" | "user" }
   | { type: "assistant-text"; text: string }
   | { type: "tool-start"; name: string; arguments: string }
   | { type: "tool-end"; name: string; durationMs: number; content: import("./llm-types.ts").ToolContent; isError?: boolean }
@@ -53,12 +53,14 @@ export type AgentOptions = {
 export interface Agent {
   // 현재 권한 우회 여부를 UI에 제공한다.
   getPermissionMode(): PermissionMode;
-  // 실행 중이 아닐 때만 권한 우회 설정을 변경한다.
+  // 권한 우회 설정을 즉시 변경한다. 턴 중이면 다음 툴 호출부터 적용되며 이미 열린 승인 질문은 그대로 남는다.
   setPermissionMode(mode: PermissionMode): void;
   // 현재 앱의 작업 모드를 조회한다.
   getMode(): AgentMode;
-  // 실행 중이 아닐 때 지침과 실행 정책에 사용할 모드를 함께 변경한다.
-  setMode(mode: AgentMode): void;
+  // 턴 중에 요청돼 다음 스텝을 기다리는 모드다. 없으면 undefined.
+  getPendingMode(): AgentMode | undefined;
+  // 지침과 실행 정책에 사용할 모드를 바꾼다. 턴 중이면 다음 스텝 시작에 반영하고 queued를 돌려준다.
+  setMode(mode: AgentMode): "applied" | "queued";
   // 실행 중인 턴에 중단을 요청한다. true는 요청 접수이며 완료는 이벤트로 알린다.
   interrupt(): boolean;
   // 사용자 입력 한 번에 대한 모델·툴 반복을 실행하고 최종 텍스트를 반환한다.
@@ -74,14 +76,22 @@ export function createAgent(options: AgentOptions): Agent {
   compactionThreshold(budget);
   let active: AbortController | undefined;
   let mode: AgentMode = "edit";
+  let pendingMode: AgentMode | undefined;
   let pendingPlanExit = false;
   let permissionMode: PermissionMode = "default";
   const approveForSession = createSessionApprover(options.requestApproval);
 
-  // 진행 중인 툴 요청이 갑자기 우회 실행되지 않게 모드 변경을 제한한다.
+  // 권한은 툴 호출마다 그 순간의 값으로 계산하므로 턴 중 변경도 다음 툴 호출부터 적용된다. 이미 기다리는 승인 질문은 자동 통과시키지 않는다.
   function setPermissionMode(next: PermissionMode) {
-    if (active) throw new Error("턴이 끝나거나 중단된 뒤 권한 모드를 변경하세요.");
     permissionMode = parsePermissionMode(next);
+  }
+
+  // 모드가 실제로 바뀔 때만 상태를 갱신한다. 코어가 스스로 반영한 경우(계획 승인, 대기 모드 적용)에만 화면에 알리고, UI의 직접 호출은 호출자가 이미 알고 있으므로 알리지 않는다.
+  function applyMode(next: AgentMode, reason: "plan-approved" | "user", notify = true) {
+    if (next === mode) return false;
+    mode = next;
+    if (notify) onEvent?.({ type: "mode-changed", mode, reason });
+    return true;
   }
 
   // DSH처럼 계획 전문을 툴 인자로 받아 검토하며 모드 전환은 다음 스텝까지 미룬다.
@@ -107,10 +117,16 @@ export function createAgent(options: AgentOptions): Agent {
     },
   }, { owner: "harness:plan" });
 
-  // 이미 실행 중인 턴의 지침과 승인 정책이 도중에 바뀌지 않게 한다.
-  function setMode(next: AgentMode) {
-    if (active) throw new Error("턴이 끝나거나 중단된 뒤 모드를 변경하세요.");
-    mode = parseMode(next);
+  // 턴 중에는 요청 경계인 다음 스텝 시작까지 미룬다. 실행 중인 툴 배치의 지침·권한은 그대로 두고, 같은 모드를 다시 고르면 대기를 취소한다.
+  function setMode(next: AgentMode): "applied" | "queued" {
+    const target = parseMode(next);
+    if (!active) {
+      pendingMode = undefined;
+      applyMode(target, "user", false);
+      return "applied";
+    }
+    pendingMode = target === mode ? undefined : target;
+    return pendingMode === undefined ? "applied" : "queued";
   }
 
   // 화면과 무관하게 현재 턴의 취소 신호를 발생시키며 중복 요청은 무시한다.
@@ -213,12 +229,20 @@ export function createAgent(options: AgentOptions): Agent {
       const maxOutputLimitRecoveries = 2;
       for (let stepNumber = 1; ; stepNumber++) {
         signal.throwIfAborted();
+        const scope = { ...turnScope, step: stepNumber };
         if (pendingPlanExit) {
           pendingPlanExit = false;
-          mode = "edit";
-          onEvent?.({ type: "mode-changed", mode });
+          applyMode("edit", "plan-approved");
         }
-        const scope = { ...turnScope, step: stepNumber };
+        // 사용자가 턴 중에 고른 모드는 여기서 반영한다. 모델에게도 이유를 알려 거부된 툴을 오해하지 않게 한다.
+        if (pendingMode !== undefined) {
+          const next = pendingMode;
+          pendingMode = undefined;
+          if (applyMode(next, "user")) {
+            await rememberMessage(session, { role: "user", content: [{ type: "text", text:
+              `[하네스 알림] 사용자가 작업 모드를 ${next}로 전환했습니다. 이번 스텝부터 ${next} 모드의 지침과 툴 권한이 적용됩니다. 이 메시지는 새 사용자 요청이 아닙니다.` }] }, scope, "harness");
+          }
+        }
         const output = await step(session, scope);
         signal.throwIfAborted();
         if (output.stopReason === "max-tokens") {
@@ -321,12 +345,20 @@ export function createAgent(options: AgentOptions): Agent {
     } finally {
       pendingPlanExit = false;
       active = undefined;
+      // 다음 스텝 없이 턴이 끝났으면 대기 중인 모드를 지금 반영한다.
+      if (pendingMode !== undefined) {
+        const next = pendingMode;
+        pendingMode = undefined;
+        applyMode(next, "user");
+      }
     }
   }
 
   return { turn, compact: compactAndSave, interrupt, setMode, setPermissionMode,
     // 권한 우회 상태는 세션 파일에 저장하지 않는다.
     getPermissionMode: () => permissionMode,
+    // UI가 "다음 스텝부터" 표시를 할 수 있게 대기 중인 모드를 반환한다.
+    getPendingMode: () => pendingMode,
     // UI가 현재 선택한 모드를 표시하도록 반환한다.
     getMode: () => mode };
 }

@@ -80,7 +80,7 @@ export function createCli() {
 // 코어 진행 이벤트를 기존 CLI 출력 형식으로 표시한다.
 export function renderCliEvent(event: AgentEvent) {
   switch (event.type) {
-    case "mode-changed": console.log(`[mode] ${event.mode} · 계획 승인됨`); break;
+    case "mode-changed": console.log(`[mode] ${event.mode} · ${event.reason === "plan-approved" ? "계획 승인됨" : "사용자 전환 적용"}`); break;
     case "assistant-text": console.log(event.text); break;
     case "tool-start": console.log(`[tool] ${event.name} ${event.arguments}`); break;
     case "compaction-start": console.log("[context] 대화를 요약합니다..."); break;
@@ -156,9 +156,9 @@ export async function runCli(options: CliOptions) {
       if (input.trim().split(/\s/, 1)[0] === "/mode") {
         try {
           const target = input.trim().slice(5).trim();
-          agent.setMode(target === "yolo" ? "edit" : parseMode(target));
+          const result = agent.setMode(target === "yolo" ? "edit" : parseMode(target));
           agent.setPermissionMode(target === "yolo" ? "yolo" : "default");
-          console.log(`[mode] ${target === "yolo" ? "YOLO · 모든 툴 권한 검사 우회" : agent.getMode()}`);
+          console.log(`[mode] ${target === "yolo" ? "YOLO · 모든 툴 권한 검사 우회" : agent.getMode()}${result === "queued" ? " · 모드는 다음 스텝부터" : ""}`);
         } catch (error) {
           console.log(error instanceof Error ? error.message : String(error));
         }

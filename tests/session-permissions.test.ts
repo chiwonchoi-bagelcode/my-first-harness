@@ -51,7 +51,6 @@ test("실제 Agent는 세션 승인을 재사용하고 YOLO에서만 deny를 우
     adapter: {
       // 각 턴마다 지정한 툴을 한 번 요청하고 종료한다.
       async generate() {
-        assert.throws(() => agent.setPermissionMode("yolo"), /턴/);
         return ++calls % 2 === 1 ? { stopReason: "tool-calls", message: { role: "assistant", content: [
           { type: "tool-call", id: String(calls), name: toolName, arguments: "{}" },
         ] } } : { stopReason: "stop", message: { role: "assistant", content: [] } };
