@@ -205,8 +205,9 @@ export function createAgent(options: AgentOptions): Agent {
     }
     const context = await assembleContext(session);
     // 작업 스텝의 텍스트 조각만 화면으로 흘린다. 툴 실행과 기록은 아래의 완성 응답을 기준으로 한다.
+    // 스텝 요청의 접두어는 다음 스텝에서 그대로 다시 보내므로 캐시 표시 대상이다. 요약·독립 의견 요청은 표시하지 않는다.
     const result = await recordLLM(adapter, history, scope, "step", active?.signal,
-      onEvent ? { onTextDelta: (text) => onEvent({ type: "assistant-delta", text }) } : {}).generate(context);
+      onEvent ? { onTextDelta: (text) => onEvent({ type: "assistant-delta", text }) } : {}).generate({ ...context, promptCache: true });
     // 잘린 응답은 model-response 원본 로그에만 남기고 재전송용 대화에는 넣지 않는다.
     if (result.stopReason !== "max-tokens") await rememberMessage(session, result.message, scope);
 

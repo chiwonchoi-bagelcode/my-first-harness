@@ -21,7 +21,8 @@ export function createModelAdapter(name: string, apiKey: string | undefined): LL
   } };
   if (name === "haiku") return { ...createAnthropicMessagesAdapter({
     provider: "bagel-anthropic", baseURL: `${baseURL}/anthropic/v1`,
-    model: "claude-haiku-4-5-20251001", apiKey, auth: "bearer", supportsImages: true, stream: true,
+    // Anthropic은 명시적 표시가 있어야 캐시한다. Haiku 4.5는 접두어가 4,096토큰 이상일 때만 캐시되므로 툴을 많이 끄면 tools+system 덩어리는 캐시되지 않을 수 있다.
+    model: "claude-haiku-4-5-20251001", apiKey, auth: "bearer", supportsImages: true, stream: true, promptCache: true,
     // 코딩용 기본 출력 한도. Haiku 4.5의 64K 상한 안에서 요청별 재정의가 가능하다.
     maxOutputTokens: 32_000,
   }), contextBudget: {

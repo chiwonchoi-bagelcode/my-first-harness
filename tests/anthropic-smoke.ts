@@ -56,9 +56,16 @@ async function main() {
     }
     console.log(`Haiku에 실제 툴 정의 ${definitions.length}개 전송 (기본 ${builtinCount}개 + MCP ${definitions.length - builtinCount}개)`);
     const adapter = createModelAdapter("haiku", process.env.AIPROXY_TOKEN);
-    const request: LLMRequest = { system: "Follow the user's request. Keep answers short.",
+    // Haiku 4.5는 접두어가 4,096토큰 이상일 때만 캐시한다. 툴 13개(약 3,300자)와 짧은 지침만으로는 못 넘기므로 고정 지침 본문을 덧붙여 실제 앱(약 25,000자)과 비슷한 크기로 만든다.
+    const guidelines = Array.from({ length: 200 }, (_, index) =>
+      `Guideline ${index + 1}: verify the requested behavior with observed evidence before reporting completion; a passing build alone is not proof.`).join("\n");
+    const request: LLMRequest = { system: `Follow the user's request. Keep answers short.\n\n${guidelines}`,
       messages: [{ role: "user", content: [{ type: "text", text: "Reply with exactly pong." }] }],
-      tools: definitions, maxOutputTokens: 2048 };
+      // 실제 코어의 스텝 요청처럼 접두어 재사용을 알려 cache_control 표시를 붙인다.
+      tools: definitions, maxOutputTokens: 2048, promptCache: true };
+    // 응답 usage의 캐시 필드를 요청별로 남긴다. 키·본문은 출력하지 않는다.
+    const cacheLog = (label: string, usage: { inputTokens?: number; cachedInputTokens?: number; cacheWriteInputTokens?: number } | undefined) =>
+      console.log(JSON.stringify({ [label]: { inputTokens: usage?.inputTokens, cacheRead: usage?.cachedInputTokens, cacheWrite: usage?.cacheWriteInputTokens } }));
     // 텍스트 조각이 도착 순서대로 콜백에 오고 합치면 완성본과 같은지 확인한다.
     const deltas: string[] = [];
     const first = await adapter.generate(request, { async onRequest() {}, async onResponse() {}, onTextDelta: (text) => { deltas.push(text); } });
@@ -67,6 +74,8 @@ async function main() {
     assert.ok(deltas.length > 0, "SSE 텍스트 조각이 onTextDelta로 전달되어야 합니다.");
     assert.equal(deltas.join(""), textOf(first.message), "조각을 합친 결과가 완성 텍스트와 같아야 합니다.");
     console.log(`PASS: 스트리밍 조각 ${deltas.length}개 수신, 합친 결과가 완성본과 일치`);
+    cacheLog("usage1", first.usage);
+    assert.ok((first.usage?.cacheWriteInputTokens ?? 0) > 0, "첫 요청은 tools+system 접두어를 캐시에 써야 합니다(AIProxy가 cache_control을 통과시키고 접두어가 4,096토큰 이상이어야 함).");
 
     const parameters = { type: "object", properties: { label: { type: "string" } }, required: ["label"] };
     request.tools.push({ name: "readProbe", description: "Read a fresh verification value for a label.", parameters });
@@ -74,6 +83,8 @@ async function main() {
       "Call readProbe exactly once with label adapter-smoke. Then report the exact value the tool returned. Do not invent it." }] });
     request.messages = JSON.parse(JSON.stringify(request.messages));
     const second = await adapter.generate(request);
+    // 두 번째 요청은 툴 정의가 하나 늘어 접두어가 바뀌므로 읽기 없이 다시 쓴다. 이후 요청부터 읽힌다.
+    cacheLog("usage2 (tools changed)", second.usage);
     assert.equal(second.stopReason, "tool-calls");
     const calls = second.message.content.filter((block) => block.type === "tool-call");
     assert.equal(calls.length, 1);
@@ -85,16 +96,20 @@ async function main() {
     request.messages.push(second.message, { role: "tool", content: [{ type: "tool-result", toolCallId: calls[0].id, content: value }] });
     request.messages = JSON.parse(JSON.stringify(request.messages));
     const third = await adapter.generate(request);
+    cacheLog("usage3", third.usage);
     assert.equal(third.stopReason, "stop");
     assert.ok(textOf(third.message).includes(value));
+    assert.ok((third.usage?.cachedInputTokens ?? 0) > 0, "같은 tools+system과 대화 접두어를 다시 보낸 요청은 캐시를 읽어야 합니다.");
     request.messages.push(third.message, { role: "user", content: [{ type: "text", text:
       "What exact value did the tool return in the previous turn? Answer with that value only; do not call the tool again." }] });
     request.messages = JSON.parse(JSON.stringify(request.messages));
     const fourth = await adapter.generate(request);
+    cacheLog("usage4", fourth.usage);
     assert.equal(fourth.stopReason, "stop");
     assert.ok(textOf(fourth.message).includes(value));
+    assert.ok((fourth.usage?.cachedInputTokens ?? 0) >= (third.usage?.cachedInputTokens ?? 0), "대화가 늘수록 읽는 접두어도 늘어야 합니다.");
     assert.equal(requests, 4);
-    console.log("PASS: Haiku 텍스트 → 툴 인자 → 실제 결과 반영 → JSON 복원 후 다음 턴 (HTTP 4회)");
+    console.log("PASS: Haiku 텍스트 → 툴 인자 → 실제 결과 반영 → JSON 복원 후 다음 턴 (HTTP 4회), 3·4번째 요청에서 캐시 읽기 확인");
   } finally {
     globalThis.fetch = originalFetch;
     await closeMcpServers(clients);

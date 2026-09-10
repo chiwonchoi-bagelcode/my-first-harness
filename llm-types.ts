@@ -75,6 +75,9 @@ export type LLMRequest = {
   messages: Message[];
   tools: ToolDefinition[];
   maxOutputTokens?: number;
+  // 이 요청의 접두어(툴·지침·대화)를 다음 요청에서 다시 보낼 예정임을 알린다. 명시적 캐시 표시가 필요한 제공자만 사용하며,
+  // 요약·독립 의견처럼 한 번만 보내는 요청에는 켜지 않는다(쓰기 요금만 내고 읽히지 않는다).
+  promptCache?: boolean;
 };
 
 // 이번 모델 응답이 끝난 이유를 API와 무관하게 구분한 값.

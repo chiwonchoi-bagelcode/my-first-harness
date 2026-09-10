@@ -15,6 +15,8 @@ type Config = {
   supportsImages?: boolean;
   // 참이면 stream: true로 요청해 SSE 이벤트를 받고, 텍스트 조각은 관찰자의 onTextDelta로 전달한다.
   stream?: boolean;
+  // 참이면 접두어 재사용을 알린 요청(request.promptCache)에 cache_control 표시를 붙인다. Anthropic은 표시가 없으면 캐시하지 않는다.
+  promptCache?: boolean;
 };
 
 // 지원하는 assistant 블록. thinking은 표시하지 않고 재전송용으로만 보관한다.
@@ -142,6 +144,8 @@ export function createAnthropicMessagesAdapter(config: Config): LLMAdapter {
     async generate(request, observer, signal) {
       if (!config.apiKey) throw new Error("Anthropic API 인증 키가 없습니다.");
       checkImageInput(request.messages, config.supportsImages);
+      // 연결이 캐시를 지원하고 호출자가 접두어를 다시 보낼 요청일 때만 표시한다. 표시는 전송 시점에만 붙고 세션·재전송 정보에는 남지 않는다.
+      const cache = Boolean(config.promptCache && request.promptCache);
       const { response, result } = await requestJSON({
         api: "anthropic-messages", provider: config.provider, model: config.model,
         url: `${config.baseURL.replace(/\/$/, "")}/messages`,
@@ -149,7 +153,12 @@ export function createAnthropicMessagesAdapter(config: Config): LLMAdapter {
           model: config.model,
           max_tokens: request.maxOutputTokens ?? config.maxOutputTokens ?? 4096,
           ...(config.stream ? { stream: true } : {}),
-          ...(request.system ? { system: request.system } : {}),
+          // 최상위 표시는 서버가 messages의 마지막 캐시 가능 블록에 찍고 대화가 늘면 따라간다. 이전 스텝의 자리는 읽기 지점으로 남는다.
+          ...(cache ? { cache_control: { type: "ephemeral" } } : {}),
+          // system 마지막 블록의 표시는 그 앞에 렌더링되는 tools까지 한 덩어리로 캐시한다. 5분 TTL은 읽힐 때마다 갱신된다.
+          ...(request.system ? { system: cache
+            ? [{ type: "text", text: request.system, cache_control: { type: "ephemeral" } }]
+            : request.system } : {}),
           messages: toMessages(request.messages, config),
           ...(request.tools.length ? { tools: request.tools.map((tool) => ({
             name: tool.name, description: tool.description, input_schema: tool.parameters,
