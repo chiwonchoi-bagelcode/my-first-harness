@@ -121,6 +121,14 @@ function toMessages(messages: Message[], config: Config): WireMessage[] {
   return wire;
 }
 
+// 캐시를 켰을 때 첫 메시지의 첫 블록에도 표시를 둔다. 첫 메시지는 보통 AGENTS.md 지침이라 세션 내내 같고, tools+system만으로 Haiku 최소치
+// 4,096토큰에 못 미쳐도 여기까지는 넘기기 쉽다. 압축으로 대화 앞부분이 바뀌어도 이 지점까지는 읽기 지점으로 남는다. 블록은 복사해 세션 원본을 바꾸지 않는다.
+function markStablePrefix(messages: WireMessage[], cache: boolean): WireMessage[] {
+  const first = messages[0]?.content[0];
+  if (!cache || !first) return messages;
+  return [{ ...messages[0], content: [{ ...first, cache_control: { type: "ephemeral" } }, ...messages[0].content.slice(1)] }, ...messages.slice(1)];
+}
+
 // 호출 여부와 종료 사유를 함께 확인해 잘린 호출이나 알 수 없는 중단을 실행하지 않는다.
 function stopReason(reason: unknown, message: AssistantMessage): StopReason {
   const hasCalls = message.content.some((block) => block.type === "tool-call");
@@ -159,7 +167,7 @@ export function createAnthropicMessagesAdapter(config: Config): LLMAdapter {
           ...(request.system ? { system: cache
             ? [{ type: "text", text: request.system, cache_control: { type: "ephemeral" } }]
             : request.system } : {}),
-          messages: toMessages(request.messages, config),
+          messages: markStablePrefix(toMessages(request.messages, config), cache),
           ...(request.tools.length ? { tools: request.tools.map((tool) => ({
             name: tool.name, description: tool.description, input_schema: tool.parameters,
           })) } : {}),

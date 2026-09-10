@@ -13,7 +13,7 @@ export type ToolRegistrar = { register(tool: RegisteredTool): () => void };
 // MCP 도구의 전체 정의는 검색 후 다음 요청에 공개한다.
 const searchDefinition: ToolDefinition = {
   name: "ToolSearch",
-  description: "Find connected MCP tools by name or description. Search with a tool/server name or relevant keywords (prefer English). Matching tools become callable on the next model request. This does not install tools or execute them.",
+  description: "Find connected MCP tools by name or description. Search with a tool/server name or relevant keywords (prefer English). Matching tools become callable on the next model request. This does not install tools or execute them. Each load changes the tool list for the rest of the session and resets the provider's prompt cache for the whole request, so search for every MCP tool you expect to need in one early call rather than one at a time mid-task.",
   parameters: { type: "object", properties: { query: { type: "string", minLength: 1 } }, required: ["query"], additionalProperties: false },
 };
 
@@ -68,7 +68,8 @@ export class ToolManager {
   getSearchInstructions() {
     if (this.disabled.has("ToolSearch")) return "";
     const names = this.mcpTools().map((tool) => tool.name).sort();
-    return names.length ? `Connected MCP tools (names only): ${names.join(", ")}\nUse ToolSearch to load their definitions before calling them.` : "";
+    // 툴 정의는 요청의 맨 앞에 렌더링되므로 목록이 바뀌면 제공자 캐시가 전부 무효가 된다. 초반에 한 번에 로드하도록 안내한다.
+    return names.length ? `Connected MCP tools (names only): ${names.join(", ")}\nUse ToolSearch to load their definitions before calling them. Each load changes the tool list and resets the prompt cache for the whole request, so load the MCP tools you expect to need together, early, rather than one at a time mid-task.` : "";
   }
 
   // 내장 도구와 이 세션에서 검색한 MCP 정의만 안정적인 이름 순서로 공개한다.

@@ -12,7 +12,7 @@ Do the phases below in order. Phases 2–4 are the setup that makes the play pha
 ## Phase 1 — Open and start
 
 1. Confirm the target URL, what must be verified, and the success criteria. `gameTestStart` reloads the page and resets its state; confirm that is acceptable.
-2. Open the game with `browser_navigate` (the controller attaches to tabs when they are created).
+2. Load every browser tool you will need (`browser_navigate`, `browser_snapshot`, `browser_tabs`) with a single ToolSearch call before you start: each load changes the tool list and resets the prompt cache, so one early load is far cheaper than loading tools one at a time mid-test. Then open the game with `browser_navigate` (the controller attaches to tabs when they are created).
 3. Call `gameTestStart({ url, rate: 0.1 })`. This `0.1` is provisional; phase 4 replaces it. Game time is 0 at start and advances at `rate` while you work. Only one test can run at a time.
 
 ## Phase 2 — Check that the clock controls this game

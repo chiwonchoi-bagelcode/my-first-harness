@@ -30,9 +30,9 @@ test("연결이 캐시를 지원하고 요청이 접두어 재사용을 알리�
   const result = await createAnthropicMessagesAdapter({ ...base, promptCache: true }).generate(request);
   assert.deepEqual(bodies[0].system, [{ type: "text", text: "지침", cache_control: { type: "ephemeral" } }]);
   assert.deepEqual(bodies[0].cache_control, { type: "ephemeral" });
-  // 툴 정의와 메시지 자체에는 표시를 넣지 않는다. 대화 꼬리는 최상위 표시가 서버에서 처리한다.
+  // 툴 정의에는 표시를 넣지 않고, 메시지에는 첫 메시지의 첫 블록에만 넣는다. 대화 꼬리는 최상위 표시가 서버에서 처리한다.
   assert.equal(JSON.stringify(bodies[0].tools).includes("cache_control"), false);
-  assert.equal(JSON.stringify(bodies[0].messages).includes("cache_control"), false);
+  assert.deepEqual(bodies[0].messages[0].content[0], { type: "text", text: "안녕", cache_control: { type: "ephemeral" } });
   // 응답 처리와 재전송 정보는 표시와 무관하다.
   assert.equal(JSON.stringify(result.message.replayState).includes("cache_control"), false);
   assert.deepEqual(result.usage, { inputTokens: 5010, outputTokens: 3, cachedInputTokens: 0, cacheWriteInputTokens: 5000 });
@@ -45,7 +45,28 @@ test("연결 설정이나 요청 표시 중 하나라도 없으면 예전 본문
   for (const body of bodies) {
     assert.equal(body.system, "지침");
     assert.equal(body.cache_control, undefined);
+    assert.equal(JSON.stringify(body.messages).includes("cache_control"), false);
   }
+});
+
+test("첫 메시지 표시는 AGENTS.md와 첫 입력이 한 메시지로 합쳐져도 첫 블록(AGENTS.md)에만 붙고 세션 원본은 바꾸지 않는다", async (t) => {
+  const bodies = capture(t);
+  const messages: LLMRequest["messages"] = [
+    { role: "user", content: [{ type: "text", text: "[프로젝트 지침 · AGENTS.md]\n규칙" }] },
+    { role: "user", content: [{ type: "text", text: "안녕" }] },
+    { role: "assistant", content: [{ type: "text", text: "답" }] },
+    { role: "user", content: [{ type: "text", text: "다음" }] },
+  ];
+  const original = JSON.stringify(messages);
+  await createAnthropicMessagesAdapter({ ...base, promptCache: true }).generate({ ...request, messages });
+  const wire = bodies[0].messages;
+  assert.equal(wire.length, 3);
+  assert.deepEqual(wire[0].content, [
+    { type: "text", text: "[프로젝트 지침 · AGENTS.md]\n규칙", cache_control: { type: "ephemeral" } },
+    { type: "text", text: "안녕" },
+  ]);
+  assert.equal(JSON.stringify(wire.slice(1)).includes("cache_control"), false);
+  assert.equal(JSON.stringify(messages), original);
 });
 
 test("system이 비어 있으면 빈 텍스트 블록을 만들지 않고 최상위 표시만 붙인다", async (t) => {
