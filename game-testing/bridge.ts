@@ -4,6 +4,12 @@ import { join } from "node:path";
 // 컨트롤러가 본 탭 하나의 순서·URL·닫힘 여부다.
 export type TabInfo = { tab: number; url: string; closed: boolean };
 
+// 게임 상태 계약(window.__gameTest.getState)을 읽은 결과다. ok=false는 컨트롤러 장애가 아니라 게임 쪽 사정이다:
+// missing = 계약 없음, error = getState()가 예외, too-large = 결과가 한도 초과.
+export type GameStateResult =
+  | { ok: true; state: unknown; controls?: unknown }
+  | { ok: false; reason: "missing" | "error" | "too-large"; message?: string };
+
 // 하네스가 MCP 프로세스 안의 컨트롤러(game-testing/mcp-controller.cjs)에 보낼 수 있는 명령 집합이다.
 export interface GameBridge {
   tabs(): Promise<TabInfo[]>;
@@ -14,6 +20,8 @@ export interface GameBridge {
   keyDown(tab: number, key: string): Promise<void>;
   keyUp(tab: number, key: string): Promise<void>;
   screenshot(tab: number): Promise<Buffer>;
+  // 게임이 내놓는 상태 계약을 읽는다. 하네스는 그 내용의 모양을 모르고 그대로 전달한다.
+  state(tab: number): Promise<GameStateResult>;
 }
 
 // 컨트롤러가 연결 정보를 기록하는 파일이다. mcp-controller.cjs의 resolveInfoFile과 같은 규칙이다.
@@ -52,5 +60,10 @@ export function createBridge(infoFile: string): GameBridge {
     async keyDown(tab, key) { await send({ command: "keydown", tab, key }); },
     async keyUp(tab, key) { await send({ command: "keyup", tab, key }); },
     async screenshot(tab) { return Buffer.from((await send<{ base64: string }>({ command: "screenshot", tab })).base64, "base64"); },
+    async state(tab) {
+      const payload = await send<{ ok: boolean; json?: string; controls?: string; reason?: "missing" | "error" | "too-large"; message?: string }>({ command: "state", tab });
+      if (!payload.ok) return { ok: false, reason: payload.reason ?? "error", ...(payload.message ? { message: payload.message } : {}) };
+      return { ok: true, state: JSON.parse(payload.json ?? "null"), ...(payload.controls !== undefined ? { controls: JSON.parse(payload.controls) } : {}) };
+    },
   };
 }

@@ -177,3 +177,19 @@ test("등록한 툴의 background 선택·JSON 직렬화·인자 규격·cwd가 
   assert.equal(JSON.parse(tools.get("listJobs").execute()).length, 2);
   assert.equal(JSON.parse(await tools.get("stopJob").execute({ jobId: start.jobId })).status, "completed");
 });
+
+test("foreground 명령이 `&`로 파이프를 쥔 자식을 남기면 프로세스 종료 직후 경고와 함께 돌아오고 dispose가 그 자식을 정리한다", { skip: process.platform === "win32" }, async (t) => {
+  const jobs = new JobManager();
+  t.after(() => jobs.dispose().catch(() => {}));
+  // `cd … && sleep &`는 묶음 전체가 서브셸로 백그라운드에 가고, 그 서브셸이 stdout 파이프를 쥔 채 sleep을 기다린다. 예전에는 close가 오지 않아 영원히 멈췼다.
+  const started = performance.now();
+  const output = await jobs.run(`cd ${JSON.stringify(tmpdir())} && sleep 3 &\necho started`);
+  const elapsed = performance.now() - started;
+  assert.match(output, /started/);
+  assert.match(output, /출력 스트림을 쥔 프로세스가 남아 있습니다[\s\S]*background: true/);
+  assert.ok(elapsed < 2_000, `프로세스 종료 뒤 곧 돌아와야 한다: ${Math.round(elapsed)}ms`);
+  const job = jobs.list()[0];
+  assert.equal(job.status, "completed");
+  assert.equal(job.exitCode, 0);
+  await jobs.dispose();
+});

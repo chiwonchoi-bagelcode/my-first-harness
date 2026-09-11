@@ -15,7 +15,7 @@ import { INTERACTIVE_PERMISSIONS } from "./permissions.ts";
 
 const paths = createHarnessPaths();
 loadEnvironment(paths);
-// 기본은 Bakery Farm Luna이며 luna 또는 haiku를 지정하면 AIProxy 연결을 사용한다.
+// 기본은 Bakery Farm Luna이며 luna, haiku, fable을 지정하면 AIProxy 연결을 사용한다.
 const modelChoice = process.argv.slice(2).filter((arg) => arg !== "--tui")[0] ?? "farm";
 const token = modelChoice === "farm" ? process.env.BCF_API_KEY : process.env.AIPROXY_TOKEN;
 const adapter = createModelAdapter(modelChoice, token);

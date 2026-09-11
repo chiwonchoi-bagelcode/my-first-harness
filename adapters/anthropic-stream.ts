@@ -52,6 +52,10 @@ export async function readAnthropicStream(
         building.block.thinking = String(building.block.thinking ?? "") + delta.thinking;
       } else if (delta.type === "signature_delta" && typeof delta.signature === "string") {
         building.block.signature = String(building.block.signature ?? "") + delta.signature;
+      } else if (delta.type === "citations_delta" && isObject(delta.citation)) {
+        // 웹 검색 뒤 본문의 인용은 조각으로 온다. 텍스트에는 영향이 없고 재전송용으로 블록에 모아 둔다.
+        const citations = Array.isArray(building.block.citations) ? building.block.citations : [];
+        building.block.citations = [...citations, delta.citation];
       } else {
         throw new Error(`지원하지 않는 Anthropic SSE 조각 형식입니다: ${delta.type}`);
       }

@@ -9,7 +9,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { createHarnessPaths } from "../harness-paths.ts";
-import { createMcpServerConfigs } from "../mcp-servers.ts";
+import { createMcpServerConfigs, playwrightOutputDirectory } from "../mcp-servers.ts";
+import { controllerInfoPath, createBridge } from "../game-testing/bridge.ts";
 import { connectMcpServers, closeMcpServers } from "../mcp-client.ts";
 import { ToolManager } from "../tool-manager.ts";
 import { imageFromBytes } from "../image-content.ts";
@@ -35,6 +36,8 @@ const GAME_PAGE = `<!doctype html><html lang="en"><title>Game clock test</title>
 const ctx = document.getElementById('c').getContext('2d');
 const state = { ticks: 0, frames: 0, x: 200, y: 0, keys: {} };
 window.__state = state;
+// 상태 계약(단계 1): 플레이어가 HUD와 캔버스에서 보는 것만 읽기 전용으로 내놓는다.
+window.__gameTest = { getState() { return { ticks: state.ticks, x: state.x, y: state.y }; }, controls: { left: 'ArrowLeft', right: 'ArrowRight' } };
 // HUD는 타이머 안에서 바로 갱신해 정지 시점의 상태를 rAF 지연 없이 스냅샷으로 읽을 수 있게 한다.
 function hud() { document.getElementById('hud').textContent = 'ticks ' + state.ticks + ' · x ' + state.x; }
 setInterval(() => { state.ticks++; state.y = (state.y + 10) % 400; hud(); }, 100);
@@ -235,7 +238,7 @@ async function verifyInitPageController(paths: ReturnType<typeof createHarnessPa
 }
 
 // (C) 실제 플러그인 경로: ToolManager → 툴 5개 → 브리지 → MCP 안의 실제 컨트롤러. 모델은 없다.
-async function verifyPluginPath(paths: ReturnType<typeof createHarnessPaths>, gameUrl: string) {
+async function verifyPluginPath(paths: ReturnType<typeof createHarnessPaths>, gameUrl: string, decoyUrl: string) {
   const link = await connect(paths);
   const plugin = createGameTestingPlugin(paths);
   const manager = new ToolManager();
@@ -264,6 +267,22 @@ async function verifyPluginPath(paths: ReturnType<typeof createHarnessPaths>, ga
     const checked = JSON.parse(String(await exec("gameTestClock", { testId: started.testId, action: "check" })));
     assert.equal(checked.verdict, "controllable", JSON.stringify(checked));
     assert.equal(checked.mode, "running");
+    // 단계 1 텍스트 관찰: 시계가 정지된 탭에서도 컨트롤러의 in-process evaluate가 즉시 돌아오고, 상태 계약 값이 HUD와 같아야 한다.
+    const pausedForState = JSON.parse(String(await exec("gameTestClock", { testId: started.testId, action: "pause" })));
+    assert.equal(pausedForState.mode, "paused");
+    const stateStart = performance.now();
+    const textObserved = JSON.parse(String(await exec("gameTestObserve", { testId: started.testId, format: "text" })));
+    const stateReadMs = Math.round((performance.now() - stateStart) * 10) / 10;
+    assert.ok(stateReadMs < 1_000, `정지 중 상태 읽기 ${stateReadMs}ms`);
+    assert.equal(textObserved.format, "text");
+    assert.equal(textObserved.state.ticks, await ticks(), "상태 계약의 ticks가 HUD와 같아야 합니다.");
+    assert.deepEqual(textObserved.controls, { left: "ArrowLeft", right: "ArrowRight" });
+    assert.equal("imageHash" in textObserved, false);
+    const bothObserved = await exec("gameTestObserve", { testId: started.testId, format: "both" }) as ContentBlock[];
+    assert.ok(Array.isArray(bothObserved) && bothObserved[1].type === "image", "both는 이미지 블록도 포함해야 합니다.");
+    assert.equal(JSON.parse((bothObserved[0] as { text: string }).text).state.ticks, textObserved.state.ticks);
+    const resumedForState = JSON.parse(String(await exec("gameTestClock", { testId: started.testId, action: "resume" })));
+    assert.equal(resumedForState.mode, "running");
     const observed = await exec("gameTestObserve", { testId: started.testId }) as ContentBlock[];
     assert.ok(Array.isArray(observed) && observed[1].type === "image" && observed[1].width > 0);
     const observation = JSON.parse((observed[0] as { text: string }).text);
@@ -311,8 +330,12 @@ async function verifyPluginPath(paths: ReturnType<typeof createHarnessPaths>, ga
     const restarted = JSON.parse(String(await exec("gameTestStart", { url: gameUrl, rate: 0.2 })));
     assert.equal(restarted.freshClockInstall, false);
     await exec("gameTestStop", { testId: restarted.testId });
-    console.log(`[PASS] C. 플러그인 경로: Start(rate 0.2) → check ${checked.verdict} → Observe(이미지) → Act(ArrowLeft 게임 ${heldMs}ms / 현실 ${actRealMs}ms, 관찰→입력 현실 ${acted.observationToInputMs}ms·게임 ${acted.observationToInputGameMs}ms) → rate 0.05 → Act 시퀀스(게임 250ms, 현실 ${slowRealMs}ms) → pause·advance(300)=ticks +3·resume → Stop(resume) → 재개 후 ticks ${resumedA}→${resumedB} → 재시작 시 기존 Clock 재사용`);
-    return { checkVerdict: checked.verdict, actGameMs: heldMs, actRealMs, observationToInputMs: acted.observationToInputMs, observationToInputGameMs: acted.observationToInputGameMs, slowActRealMs: slowRealMs, achievedRate: status.achievedRate };
+    // 계약이 없는 페이지: 컨트롤러는 장애가 아니라 missing으로 답한다(하네스는 이 값을 이미지 관찰 안내로 바꾼다).
+    await link.tool("browser_tabs", { action: "new", url: decoyUrl });
+    const bridge = createBridge(controllerInfoPath(playwrightOutputDirectory(paths)));
+    assert.deepEqual(await bridge.state(1), { ok: false, reason: "missing" });
+    console.log(`[PASS] C. 플러그인 경로: Start(rate 0.2) → check ${checked.verdict} → Observe(text, 정지 중 ${stateReadMs}ms, ticks=HUD) → Observe(both) → Observe(이미지) → Act(ArrowLeft 게임 ${heldMs}ms / 현실 ${actRealMs}ms, 관찰→입력 현실 ${acted.observationToInputMs}ms·게임 ${acted.observationToInputGameMs}ms) → rate 0.05 → Act 시퀀스(게임 250ms, 현실 ${slowRealMs}ms) → pause·advance(300)=ticks +3·resume → Stop(resume) → 재개 후 ticks ${resumedA}→${resumedB} → 재시작 시 기존 Clock 재사용 → 계약 없는 탭은 missing`);
+    return { checkVerdict: checked.verdict, stateReadMs, actGameMs: heldMs, actRealMs, observationToInputMs: acted.observationToInputMs, observationToInputGameMs: acted.observationToInputGameMs, slowActRealMs: slowRealMs, achievedRate: status.achievedRate };
   } finally {
     if (typeof cleanup === "function") await cleanup();
     await link.close();
@@ -457,7 +480,7 @@ async function main() {
 
     const deadlock = await proveRunCodeDeadlock(paths, gameUrl);
     const controller = await verifyInitPageController(paths, gameUrl, decoyUrl, join(directory, "ctrl.port"));
-    const plugin = await verifyPluginPath(paths, gameUrl);
+    const plugin = await verifyPluginPath(paths, gameUrl, decoyUrl);
     const withModel = model ? await verifyWithModel(paths, gameUrl, model, token!) : undefined;
     console.log("\n[measurements]");
     console.log(JSON.stringify({ runCodeDeadlock: deadlock, initPageController: controller, pluginPath: plugin,

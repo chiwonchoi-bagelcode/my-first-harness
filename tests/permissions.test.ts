@@ -19,6 +19,10 @@ test("앱 정책은 셸·MCP에 승인 요청하고 내장 편집·조회·검�
   assert.equal(checkPermission(INTERACTIVE_PERMISSIONS, { toolName: "runCommand", args: { background: true } }), "ask");
   assert.equal(checkPermission(INTERACTIVE_PERMISSIONS, { toolName: "read", owner: "mcp:later-added", args: {} }), "ask");
   assert.equal(checkPermission(INTERACTIVE_PERMISSIONS, { toolName: "mcp_fake", owner: "plugins:local", args: {} }), "allow");
+  // 모델이 만든 툴은 만들기·지우기·실행 모두 승인 대상이다.
+  for (const toolName of ["createTool", "deleteTool", "scorePlacement"]) {
+    assert.equal(checkPermission(INTERACTIVE_PERMISSIONS, { toolName, owner: "custom-tools", args: {} }), "ask");
+  }
 });
 
 test("시작 후 등록한 MCP도 실제 소유권으로 판단하여 승인 전에는 실행하지 않는다", async () => {

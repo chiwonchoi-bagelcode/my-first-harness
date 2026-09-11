@@ -92,6 +92,8 @@ export type LLMUsage = {
   cacheWriteInputTokens?: number;
   // 출력 토큰에 포함된 부분 집합이므로 출력에 다시 더하지 않는다.
   reasoningOutputTokens?: number;
+  // 제공자가 실행한 웹 검색 횟수(보고하는 제공자만).
+  webSearchRequests?: number;
 };
 
 // 인증 정보 없이 기록할 실제 API 요청 본문과 연결 식별 정보.

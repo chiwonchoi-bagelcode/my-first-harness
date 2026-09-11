@@ -188,11 +188,13 @@ test("키 누락이나 변환할 수 없는 이전 호출 인자가 있으면 �
   assert.equal(mock.mock.callCount(), 0);
 });
 
-test("모델 선택은 Luna/Haiku별 주소·모델·인증·기본 출력 한도를 적용한다", async (t) => {
+test("모델 선택은 Luna/Haiku/Fable별 주소·모델·인증·기본 출력 한도를 적용한다", async (t) => {
   const urls: string[] = [];
+  const models: string[] = [];
   t.mock.method(globalThis, "fetch", async (url: any, init: any) => {
     urls.push(url);
     const body = JSON.parse(init.body);
+    models.push(body.model);
     assert.equal(init.headers.Authorization, "Bearer test-token");
     if (url.endsWith("/responses")) {
       assert.equal(body.model, "gpt-5.6-luna");
@@ -202,16 +204,44 @@ test("모델 선택은 Luna/Haiku별 주소·모델·인증·기본 출력 한�
       const completed = { type: "response.completed", response: { status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }] } };
       return new Response(`event: response.completed\ndata: ${JSON.stringify(completed)}\n\n`, { headers: { "content-type": "text/event-stream" } });
     }
-    assert.equal(body.model, config.model);
     assert.equal(body.max_tokens, 32_000);
     assert.equal(body.stream, true);
     return sseReply();
   });
   await createModelAdapter("luna", "test-token").generate(empty);
   await createModelAdapter("haiku", "test-token").generate(empty);
+  await createModelAdapter("fable", "test-token").generate(empty);
   assert.deepEqual(urls, ["https://aiproxy-api.backoffice.bagelgames.com/openai/v1/responses",
+    "https://aiproxy-api.backoffice.bagelgames.com/anthropic/v1/messages",
     "https://aiproxy-api.backoffice.bagelgames.com/anthropic/v1/messages"]);
+  assert.deepEqual(models, ["gpt-5.6-luna", config.model, "claude-fable-5-1"]);
   assert.throws(() => createModelAdapter("haik", "test-token"), /지원하지 않는 모델/);
+});
+
+test("웹 검색 서버 툴은 함수 툴 뒤에 붙고, 검색 블록은 공통 내용에 나타나지 않으며 재전송 정보와 사용량에 남는다", async (t) => {
+  const bodies: any[] = [];
+  const searchReply = () => Response.json({ type: "message", role: "assistant", stop_reason: "end_turn",
+    usage: { input_tokens: 10, output_tokens: 20, server_tool_use: { web_search_requests: 1 } },
+    content: [
+      { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "tetris heuristics" } },
+      { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [{ type: "web_search_result", url: "https://example.com", title: "t" }] },
+      { type: "text", text: "찾았다", citations: [{ type: "web_search_result_location", url: "https://example.com" }] },
+    ] });
+  const mock = t.mock.method(globalThis, "fetch", async (_url: any, init: any) => { bodies.push(JSON.parse(init.body)); return searchReply(); });
+  const adapter = createAnthropicMessagesAdapter({ ...config, webSearch: { type: "web_search_20250305", maxUses: 5 } });
+  const result = await adapter.generate({ ...empty, tools: [{ name: "readTextFile", description: "d", parameters: { type: "object", properties: {} } }] });
+  assert.deepEqual(bodies[0].tools, [
+    { name: "readTextFile", description: "d", input_schema: { type: "object", properties: {} } },
+    { type: "web_search_20250305", name: "web_search", max_uses: 5 },
+  ]);
+  assert.equal(result.stopReason, "stop");
+  assert.deepEqual(result.message.content, [{ type: "text", text: "찾았다" }]);
+  assert.equal((result.message.replayState?.data as any).content.length, 3, "검색 블록은 재전송 정보에 남는다.");
+  assert.equal(result.usage?.webSearchRequests, 1);
+  // 함수 툴이 없어도 검색 툴만으로 tools를 보낸다.
+  await adapter.generate(empty);
+  assert.deepEqual(bodies[1].tools, [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }]);
+  mock.mock.restore();
 });
 
 test("Haiku 기본 한도보다 요청별 한도를 우선하며 다음 요청의 기본값은 유지한다", async (t) => {

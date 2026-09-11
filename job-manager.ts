@@ -5,6 +5,8 @@ import { promisify } from "node:util";
 
 const OUTPUT_LIMIT = 16_384;
 export const MAX_JOB_WAIT_MS = 10_000;
+// foreground 명령의 프로세스가 끝난 뒤 출력 스트림이 닫히기를 기다리는 최대 시간. `cmd &`로 남긴 자식이 파이프를 쥐고 있으면 그 뒤에 그냥 돌아온다.
+const FOREGROUND_CLOSE_GRACE_MS = 500;
 // Windows에서 소유한 프로세스 트리를 종료할 때 taskkill의 완료를 기다린다.
 const execFileAsync = promisify(execFile);
 
@@ -27,6 +29,8 @@ type Job = {
   snapshot: JobSnapshot;
   child: ChildProcess;
   done: Promise<void>;
+  // 프로세스 종료(exit). 출력 스트림이 아직 열려 있어도 먼저 온다.
+  exited: Promise<void>;
   closed: boolean;
   stopRequested: boolean;
   stopping?: Promise<JobSnapshot>;
@@ -52,6 +56,7 @@ export class JobManager {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let resolveDone!: () => void;
+    let resolveExited!: () => void;
     const job: Job = {
       snapshot: {
         jobId: randomUUID(), command, status: "running", stdout: "", stderr: "",
@@ -59,6 +64,14 @@ export class JobManager {
       },
       child, closed: false, stopRequested: false,
       done: new Promise<void>((resolve) => { resolveDone = resolve; }),
+      exited: new Promise<void>((resolve) => { resolveExited = resolve; }),
+    };
+    // 종료 코드로 상태를 정한다. exit에서 먼저 정하고, exit 없이 close만 오는 경우(생성 실패)를 위해 close에서도 같은 계산을 한다.
+    const settle = (code: number | null, signal: NodeJS.Signals | null) => {
+      job.snapshot.exitCode = code;
+      job.snapshot.signal = signal;
+      job.snapshot.status = job.snapshot.error ? "failed"
+        : job.stopRequested ? "stopped" : code === 0 ? "completed" : "failed";
     };
     this.jobs.set(job.snapshot.jobId, job);
     child.stdout!.setEncoding("utf8");
@@ -66,12 +79,11 @@ export class JobManager {
     child.stdout!.on("data", (chunk: string) => this.append(job, "stdout", chunk));
     child.stderr!.on("data", (chunk: string) => this.append(job, "stderr", chunk));
     child.once("error", (error) => { job.snapshot.error = error.message; });
+    child.once("exit", (code, signal) => { settle(code, signal); resolveExited(); });
     child.once("close", (code, signal) => {
       job.closed = true;
-      job.snapshot.exitCode = code;
-      job.snapshot.signal = signal;
-      job.snapshot.status = job.snapshot.error ? "failed"
-        : job.stopRequested ? "stopped" : code === 0 ? "completed" : "failed";
+      settle(code, signal);
+      resolveExited();
       resolveDone();
     });
     // 프로세스 생성 성공까지만 기다린다. 서버의 접속 준비 완료를 뜻하지 않는다.
@@ -95,15 +107,21 @@ export class JobManager {
       signal?.addEventListener("abort", onAbort, { once: true });
       if (signal?.aborted) onAbort();
     });
+    // 프로세스가 끝났는데 출력 스트림이 닫히지 않는 것은 `cmd &`로 남긴 자식이 파이프를 쥔 경우다. 그때는 짧게만 기다리고 돌아온다.
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const exitedThenClosed = job.exited.then(() => Promise.race([
+      job.done, new Promise<void>((resolve) => { graceTimer = setTimeout(resolve, FOREGROUND_CLOSE_GRACE_MS); }),
+    ]));
     try {
-      await Promise.race([job.done, aborted]);
+      await Promise.race([exitedThenClosed, aborted]);
       await stopping;
       signal?.throwIfAborted();
-    } finally { signal?.removeEventListener("abort", onAbort); }
+    } finally { clearTimeout(graceTimer); signal?.removeEventListener("abort", onAbort); }
     const result = this.snapshot(job);
     const output = result.stdout + result.stderr;
-    const notice = result.stdoutTruncated || result.stderrTruncated
-      ? "\n[명령 출력 일부 생략: 각 스트림의 최근 16384자만 보관]" : "";
+    const notice = (result.stdoutTruncated || result.stderrTruncated
+      ? "\n[명령 출력 일부 생략: 각 스트림의 최근 16384자만 보관]" : "")
+      + (job.closed ? "" : "\n[주의] 명령은 끝났지만 출력 스트림을 쥔 프로세스가 남아 있습니다(예: `&`로 띄운 서버). 이 도구는 그 프로세스를 관리하지 않으며 하네스 종료 때 함께 정리합니다. 서버·장기 작업은 background: true로 실행하세요.");
     if (result.status !== "completed") {
       throw new Error(`명령 실행 실패 (exitCode=${result.exitCode}, signal=${result.signal}): ${result.error ?? ""}\n${output}${notice}`);
     }

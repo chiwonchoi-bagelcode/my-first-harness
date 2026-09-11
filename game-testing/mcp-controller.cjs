@@ -67,6 +67,25 @@ async function handle(body) {
       const png = await page.screenshot({ type: "png" });
       return { base64: png.toString("base64") };
     }
+    case "state": {
+      // 게임이 협력 계약(window.__gameTest.getState)을 두었으면 그 결과를 JSON 문자열로 돌려준다. 계약이 없거나 함수가 실패한 것은
+      // 컨트롤러 장애가 아니라 게임 쪽 사정이므로 ok=false로 보고한다. page.evaluate는 페이지 타이머와 무관한 CDP 호출이라 시계가 정지된 탭에서도 돌아온다.
+      const result = await page.evaluate(() => {
+        const api = globalThis.__gameTest;
+        if (!api || typeof api.getState !== "function") return { ok: false, reason: "missing" };
+        try {
+          const state = api.getState();
+          return { ok: true, json: JSON.stringify(state === undefined ? null : state),
+            controls: api.controls === undefined ? undefined : JSON.stringify(api.controls) };
+        } catch (error) {
+          return { ok: false, reason: "error", message: error instanceof Error ? error.message : String(error) };
+        }
+      });
+      if (result.ok && result.json.length > 65_536) {
+        return { ok: false, reason: "too-large", message: `getState() 결과가 ${result.json.length}자입니다. 플레이어가 화면에서 보는 것만 담아 65,536자 이하로 줄이세요.` };
+      }
+      return result;
+    }
     default: throw new Error(`알 수 없는 명령: ${body.command}`);
   }
 }

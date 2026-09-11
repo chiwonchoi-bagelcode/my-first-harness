@@ -143,7 +143,7 @@ test("HTTP 오류·실패 응답·알 수 없는 출력·누락된 암호화 정
     [() => reply([], { status: "failed", error: { message: "생성 실패" } }), /생성 실패/],
     [() => Response.json(null), /LLM 요청 실패/],
     [() => Response.json({ status: "completed" }), /배열/],
-    [() => reply([{ type: "web_search_call" }]), /출력 타입/],
+    [() => reply([{ type: "image_generation_call" }]), /출력 타입/],
     [() => reply([{ ...messageItem(), role: "user" }]), /메시지 형식/],
     [() => reply([{ ...messageItem(), content: [{ type: "image", text: "x" }] }]), /메시지 형식/],
     [() => reply([{ ...callItem(), call_id: undefined }]), /함수 호출 형식/],
@@ -161,6 +161,20 @@ test("키가 없으면 인증 실패 요청을 보내지 않는다", async (t) =
   const mock = t.mock.method(globalThis, "fetch", async () => { throw new Error("호출되면 안 됨"); });
   await assert.rejects(createResponsesAdapter({ ...config, apiKey: undefined }).generate(empty), /인증 키/);
   assert.equal(mock.mock.callCount(), 0);
+});
+
+test("웹 검색 서버 툴을 함수 툴 뒤에 붙이고, 검색 호출 항목은 공통 내용에 숨기며 재전송에서는 뺀다", async (t) => {
+  const bodies: any[] = [];
+  const searchItem = { type: "web_search_call", id: "ws_1", status: "completed", action: { type: "search", query: "tetris" } };
+  t.mock.method(globalThis, "fetch", async (_url: any, init: any) => { bodies.push(JSON.parse(init.body)); return reply([searchItem, messageItem("답")]); });
+  const adapter = createResponsesAdapter({ ...config, webSearch: true });
+  const result = await adapter.generate({ ...empty, tools: [{ name: "readTextFile", description: "d", parameters: { type: "object", properties: {} } }] });
+  assert.deepEqual(bodies[0].tools.map((tool: any) => tool.type), ["function", "web_search"]);
+  assert.deepEqual(result.message.content, [{ type: "text", text: "답" }]);
+  await adapter.generate({ ...empty, messages: [{ role: "user", content: [{ type: "text", text: "q" }] }, result.message] });
+  const items = bodies[1].input;
+  assert.ok(items.every((item: any) => item.type !== "web_search_call"), JSON.stringify(items));
+  assert.ok(items.some((item: any) => item.type === "message" && item.role === "assistant"), "본문 항목은 원본대로 재전송한다.");
 });
 
 test("명시한 reasoning effort만 API 옵션으로 전달한다", async (t) => {

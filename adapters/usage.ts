@@ -20,6 +20,7 @@ export function usageOf(api: WireRequest["api"], result: any): { usage?: LLMUsag
       outputTokens: count(raw.output_tokens),
       cachedInputTokens: read,
       cacheWriteInputTokens: write,
+      webSearchRequests: count(raw.server_tool_use?.web_search_requests),
     };
   } else {
     const chat = api === "chat-completions";

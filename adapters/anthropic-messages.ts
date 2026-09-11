@@ -17,6 +17,8 @@ type Config = {
   stream?: boolean;
   // 참이면 접두어 재사용을 알린 요청(request.promptCache)에 cache_control 표시를 붙인다. Anthropic은 표시가 없으면 캐시하지 않는다.
   promptCache?: boolean;
+  // 제공자가 실행하는 웹 검색 툴. type은 모델 세대별 툴 이름(Haiku 4.5: web_search_20250305, Fable: web_search_20260209), maxUses는 요청당 검색 상한.
+  webSearch?: { type: string; maxUses?: number };
 };
 
 // 지원하는 assistant 블록. thinking은 표시하지 않고 재전송용으로만 보관한다.
@@ -24,7 +26,10 @@ type OutputBlock =
   | { type: "text"; text: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
   | { type: "thinking"; thinking: string; signature: string }
-  | { type: "redacted_thinking"; data: string };
+  | { type: "redacted_thinking"; data: string }
+  // 제공자가 실행한 툴(웹 검색 등)의 호출과 결과. 재전송용으로만 보관하고 공통 내용에는 내지 않는다.
+  | { type: "server_tool_use"; id: string; name: string; input: Record<string, unknown> }
+  | { type: `${string}_tool_result`; tool_use_id: string; content: unknown };
 
 // Messages API에 보내는 user/assistant 메시지와 블록 목록.
 type WireMessage = { role: "user" | "assistant"; content: object[] };
@@ -45,6 +50,9 @@ function readContent(value: unknown): OutputBlock[] {
     if (block.type === "thinking" && typeof block.thinking === "string"
       && typeof block.signature === "string" && block.signature) continue;
     if (block.type === "redacted_thinking" && typeof block.data === "string") continue;
+    if (block.type === "server_tool_use" && typeof block.id === "string" && typeof block.name === "string" && isObject(block.input)) continue;
+    // web_search_tool_result 외에 code_execution_tool_result처럼 검색 툴이 함께 내는 결과 블록도 있어 이름 끝으로 받는다.
+    if (typeof block.type === "string" && block.type.endsWith("_tool_result") && typeof block.tool_use_id === "string") continue;
     throw new Error(`지원하지 않는 Anthropic 블록 형식입니다: ${block.type}`);
   }
   return value as OutputBlock[];
@@ -137,6 +145,7 @@ function stopReason(reason: unknown, message: AssistantMessage): StopReason {
     if (!hasCalls) throw new Error("Anthropic tool_use로 종료했지만 호출 내용이 없습니다.");
     return "tool-calls";
   }
+  // pause_turn(서버 툴이 길어져 제공자가 턴을 멈춤)은 기존처럼 알 수 없는 사유로 두어 에이전트가 명시적으로 실패하게 한다.
   if (["end_turn", "stop_sequence", "refusal"].includes(String(reason))) {
     if (hasCalls) throw new Error("Anthropic 정상 종료와 툴 호출이 함께 반환되었습니다.");
     return textOf(message).trim() ? "stop" : "other";
@@ -154,6 +163,11 @@ export function createAnthropicMessagesAdapter(config: Config): LLMAdapter {
       checkImageInput(request.messages, config.supportsImages);
       // 연결이 캐시를 지원하고 호출자가 접두어를 다시 보낼 요청일 때만 표시한다. 표시는 전송 시점에만 붙고 세션·재전송 정보에는 남지 않는다.
       const cache = Boolean(config.promptCache && request.promptCache);
+      // 함수 툴 뒤에 제공자 실행 툴(웹 검색)을 붙인다. 목록에 있으면 쓸지는 모델이 정한다.
+      const tools: object[] = [
+        ...request.tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })),
+        ...(config.webSearch ? [{ type: config.webSearch.type, name: "web_search", ...(config.webSearch.maxUses ? { max_uses: config.webSearch.maxUses } : {}) }] : []),
+      ];
       const { response, result } = await requestJSON({
         api: "anthropic-messages", provider: config.provider, model: config.model,
         url: `${config.baseURL.replace(/\/$/, "")}/messages`,
@@ -168,9 +182,7 @@ export function createAnthropicMessagesAdapter(config: Config): LLMAdapter {
             ? [{ type: "text", text: request.system, cache_control: { type: "ephemeral" } }]
             : request.system } : {}),
           messages: markStablePrefix(toMessages(request.messages, config), cache),
-          ...(request.tools.length ? { tools: request.tools.map((tool) => ({
-            name: tool.name, description: tool.description, input_schema: tool.parameters,
-          })) } : {}),
+          ...(tools.length ? { tools } : {}),
         },
       }, {
         "Content-Type": "application/json", "anthropic-version": "2023-06-01",

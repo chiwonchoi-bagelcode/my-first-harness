@@ -37,7 +37,10 @@ test("플러그인 등록은 실행하지 않고 활성화·해제·개별 off�
   assert.equal(setups, 0);
   await Promise.all([manager.enable("counter"), manager.enable("counter")]);
   assert.equal(setups, 1);
-  assert.throws(() => savedRegistrar!.register(tool("late")), /setup/);
+  // 켜져 있는 동안은 setup 뒤에도 등록할 수 있고(모델이 만든 툴), 반환된 해제 함수로 개별 해제할 수 있다.
+  const unregisterLate = savedRegistrar!.register(tool("late"));
+  assert.ok(tools.getDefinitions().some((item) => item.name === "late"));
+  unregisterLate();
   assert.equal((await tools.execute("up", "{}")).content, "1");
   tools.setEnabled("up", false);
   assert.equal(tools.getDefinitions().length, 1);
@@ -47,7 +50,9 @@ test("플러그인 등록은 실행하지 않고 활성화·해제·개별 off�
   await manager.disable("counter");
   assert.equal(cleanups, 1);
   assert.equal(tools.getDefinitions().length, 0);
-  assert.equal(tools.getCatalog().length, 2);
+  // up·value와 한 번 등록됐던 late가 관리 화면 목록에 남는다.
+  assert.equal(tools.getCatalog().length, 3);
+  assert.throws(() => savedRegistrar!.register(tool("late")), /켜져 있는 동안/);
   await manager.enable("counter");
   assert.deepEqual(tools.getDefinitions().map((item) => item.name), ["value"]);
   tools.setEnabled("up", true);

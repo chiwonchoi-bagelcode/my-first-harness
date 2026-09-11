@@ -14,6 +14,8 @@ export type HarnessPlugin = {
 type PluginEntry = {
   plugin: HarnessPlugin;
   active: boolean;
+  // 켜는 중이거나 켜져 있는 동안 참. 모델이 만든 툴처럼 setup 뒤에 등록되는 툴도 이 동안만 받는다.
+  accepting: boolean;
   cleanup?: PluginCleanup;
   unregister: (() => void)[];
 };
@@ -33,7 +35,7 @@ export class PluginManager {
   register(plugin: HarnessPlugin) {
     if (this.closing) throw new Error("플러그인 관리자가 종료 중입니다.");
     if (this.entries.has(plugin.name)) throw new Error(`중복 플러그인: ${plugin.name}`);
-    this.entries.set(plugin.name, { plugin, active: false, unregister: [] });
+    this.entries.set(plugin.name, { plugin, active: false, accepting: false, unregister: [] });
   }
 
   // 화면에 보여줄 활성 상태만 반환하고 내부 정리 함수는 노출하지 않는다.
@@ -57,6 +59,7 @@ export class PluginManager {
 
   // 새 툴 호출부터 차단한 후 소유 자원을 정리한다. 정리 실패는 재시도할 수 있다.
   private async stop(entry: PluginEntry) {
+    entry.accepting = false;
     for (const unregister of entry.unregister.splice(0).reverse()) unregister();
     entry.active = false;
     await entry.cleanup?.();
@@ -70,11 +73,11 @@ export class PluginManager {
       const entry = this.entry(name);
       if (entry.active) return;
       if (entry.cleanup) await this.stop(entry);
-      let accepting = true;
+      entry.accepting = true;
       const tools: ToolRegistrar = {
-        // 소속을 호출자가 바꾸지 못하도록 관리자가 직접 지정한다.
+        // 소속을 호출자가 바꾸지 못하도록 관리자가 직접 지정한다. 켜져 있는 동안은 setup 뒤에도 등록할 수 있고, 그 등록도 추적되어 끄면 함께 해제된다.
         register: (tool) => {
-          if (!accepting) throw new Error("툴은 플러그인 setup 실행 중에만 등록할 수 있습니다.");
+          if (!entry.accepting) throw new Error("툴은 플러그인이 켜져 있는 동안에만 등록할 수 있습니다.");
           const unregister = this.tools.register(tool, { owner: name });
           entry.unregister.push(unregister);
           return unregister;
@@ -87,7 +90,7 @@ export class PluginManager {
       } catch (error) {
         await this.stop(entry);
         throw error;
-      } finally { accepting = false; }
+      }
     });
   }
 

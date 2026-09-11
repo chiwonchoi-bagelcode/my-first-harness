@@ -5,7 +5,7 @@ export function registerShellTools(toolManager: any, cwd = process.cwd()) {
   const jobs = new JobManager(cwd);
   toolManager.register({
     name: "runCommand",
-    description: "현재 작업 폴더에서 셸 명령을 실행한다. 기본은 종료까지 기다린다. 오래 걸리는 명령이나 서버를 실행해 둔 채 다른 작업을 하려면 background=true를 선택한다. 이때 작업 ID를 반환하며 서버 준비나 작업 성공을 보장하지 않는다. 셸의 & 대신 background 옵션을 사용하라. 대화형 stdin은 지원하지 않는다.",
+    description: "현재 작업 폴더에서 셸 명령을 실행한다. 기본은 종료까지 기다린다. 오래 걸리는 명령이나 서버를 실행해 둔 채 다른 작업을 하려면 background=true를 선택한다. 이때 작업 ID를 반환하며 서버 준비나 작업 성공을 보장하지 않는다. 셸의 & 대신 background 옵션을 사용하라. `&`로 프로세스를 남기면 명령이 끝난 직후 경고와 함께 돌아오지만 그 프로세스는 관리되지 않는다. 대화형 stdin은 지원하지 않는다.",
     parameters: {
       type: "object",
       properties: {

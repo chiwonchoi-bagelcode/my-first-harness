@@ -52,12 +52,13 @@ export function createSessionApprover(approve?: RequestApproval) {
 // 기존 동작을 유지하는 기본값이며, 제한·샌드박스를 제공하는 정책이 아니다.
 export const ALLOW_ALL: PermissionPolicy = { defaultDecision: "allow", rules: [] };
 
-// 앱의 첫 승인 정책: 셸과 MCP는 매번 묻고 나머지 내장 도구는 기존처럼 허용한다.
+// 앱의 첫 승인 정책: 셸과 MCP, 그리고 모델이 만든 툴(만들기·지우기·실행)은 매번 묻고 나머지 내장 도구는 기존처럼 허용한다.
 export const INTERACTIVE_PERMISSIONS: PermissionPolicy = {
   defaultDecision: "allow",
   rules: [
     { toolName: "runCommand", decision: "ask" },
     { ownerPrefix: "mcp:", decision: "ask" },
+    { ownerPrefix: "custom-tools", decision: "ask" },
   ],
 };
 

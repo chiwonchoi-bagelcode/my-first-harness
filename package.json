@@ -23,6 +23,8 @@
     "test:mcp": "node tests/mcp-smoke.ts",
     "test:playwright": "node tests/playwright-smoke.ts",
     "test:game-testing": "node tests/game-testing-smoke.ts",
+    "test:custom-tools": "node tests/custom-tools-smoke.ts",
+    "test:web-search": "node tests/web-search-smoke.ts",
     "test:responses": "node tests/responses-smoke.ts",
     "test:farm": "node tests/farm-smoke.ts",
     "test:images": "node tests/images-smoke.ts",

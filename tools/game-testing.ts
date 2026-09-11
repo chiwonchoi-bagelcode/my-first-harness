@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { controllerInfoPath, createBridge } from "../game-testing/bridge.ts";
 import type { GameBridge } from "../game-testing/bridge.ts";
 import { createTestRun } from "../game-testing/test-run.ts";
-import type { ActInput, TestRun } from "../game-testing/test-run.ts";
+import type { ObserveFormat, ActInput, TestRun } from "../game-testing/test-run.ts";
 import { playwrightOutputDirectory } from "../mcp-servers.ts";
 import type { HarnessPaths } from "../harness-paths.ts";
 import type { HarnessPlugin } from "../plugin-manager.ts";
@@ -95,12 +95,16 @@ export function createGameTestingPlugin(paths: HarnessPaths, options: { bridge?:
 
       tools.register({
         name: "gameTestObserve",
-        description: "Take a screenshot of the game tab and return it as an image with an observationId and the game time at capture. Use this instead of browser_take_screenshot during a test.",
-        parameters: { type: "object", properties: { testId: { type: "string" } }, required: ["testId"], additionalProperties: false },
-        // 화면을 찍어 텍스트 정보와 이미지 블록을 함께 돌려준다.
-        async execute({ testId }: { testId: string }) {
-          const { image, ...info } = await current(testId).observe();
-          return [{ type: "text" as const, text: JSON.stringify(info) }, image];
+        description: "Observe the game tab and return an observationId plus the game time at capture. `format`: \"image\" (default) = a screenshot as an image block; \"text\" = the game's own state JSON from its `window.__gameTest.getState()` contract (exact, cheap, no pixels — available only when the game implements the contract described in the game-testing skill; otherwise this returns an error telling you to use image or add the contract); \"both\" = state JSON and screenshot. Use this instead of browser_take_screenshot during a test.",
+        parameters: { type: "object", properties: {
+          testId: { type: "string" },
+          format: { type: "string", enum: ["image", "text", "both"], description: "What to capture. Default image." },
+        }, required: ["testId"], additionalProperties: false },
+        // 상태 JSON은 텍스트로, 스크린샷은 이미지 블록으로 돌려준다. 하네스는 상태 JSON의 내용을 해석하지 않는다.
+        async execute({ testId, format = "image" }: { testId: string; format?: ObserveFormat }) {
+          const { image, ...info } = await current(testId).observe(format);
+          const text = JSON.stringify(info);
+          return image ? [{ type: "text" as const, text }, image] : text;
         },
       });
 

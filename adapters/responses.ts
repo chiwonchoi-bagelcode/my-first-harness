@@ -12,6 +12,8 @@ type Config = {
   apiKey: string | undefined;
   // 생략하면 모델 기본값을 쓴다. 허용값은 연결 서버와 모델별 문서로 확인한다.
   reasoningEffort?: string;
+  // 참이면 제공자가 실행하는 웹 검색 툴(type: web_search)을 함수 툴 뒤에 붙인다.
+  webSearch?: boolean;
   // Farm처럼 SSE만 반환하는 연결에서는 스트리밍으로 요청한다.
   stream?: boolean;
   // false인 연결에는 서버가 무시하는 출력 한도 필드를 보내지 않는다.
@@ -27,6 +29,8 @@ type OutputItem = (
   )[] }
   | { type: "function_call"; call_id: string; name: string; arguments: string }
   | { type: "reasoning"; summary: { type: "summary_text"; text: string }[]; encrypted_content: string }
+  // 제공자가 실행한 웹 검색 호출. 인용은 message 본문에 있으므로 내용은 해석하지 않고 재전송에서도 뺀다.
+  | { type: "web_search_call"; action?: unknown }
 ) & { id?: string; status?: string };
 
 // 외부 JSON을 필드 확인 가능한 객체로 좁힌다.
@@ -62,6 +66,8 @@ function readOutput(value: unknown): OutputItem[] {
       if (typeof item.encrypted_content !== "string" || !item.encrypted_content) {
         throw new Error("Responses reasoning에 재전송할 encrypted_content가 없습니다.");
       }
+    } else if (item.type === "web_search_call") {
+      continue;
     } else {
       throw new Error(`지원하지 않는 Responses 출력 타입입니다: ${item.type}`);
     }
@@ -97,7 +103,8 @@ function replayOutput(message: AssistantMessage, config: Config): OutputItem[] |
   if (!isObject(data) || data.contentKey !== JSON.stringify(message.content)) return;
   try {
     const output = readOutput(data.output);
-    if (JSON.stringify(contentOf(output)) === data.contentKey) return output;
+    // 검색 호출 항목은 입력으로 되돌릴 수 없을 수 있어 재전송에서 뺀다. 인용이 담긴 본문은 그대로 간다.
+    if (JSON.stringify(contentOf(output)) === data.contentKey) return output.filter((item) => item.type !== "web_search_call");
   } catch {
     // 손상된 재전송 정보는 쓰지 않고 공통 내용으로 요청을 구성한다.
   }
@@ -146,6 +153,15 @@ export function createResponsesAdapter(config: Config): LLMAdapter {
     async generate(request, observer, signal) {
       if (!config.apiKey) throw new Error("Responses API 인증 키가 없습니다.");
       checkImageInput(request.messages, config.supportsImages);
+      // 함수 툴 뒤에 제공자 실행 툴(웹 검색)을 붙인다. 목록에 있으면 쓸지는 모델이 정한다.
+      const tools: object[] = [
+        ...request.tools.map((tool) => ({
+          type: "function", name: tool.name, description: tool.description, parameters: tool.parameters,
+          // 선택 인자를 강제 필수로 바꾸지 않는다. 기존 ToolManager에서 원래 스키마로 검증한다.
+          strict: false,
+        })),
+        ...(config.webSearch ? [{ type: "web_search" }] : []),
+      ];
       const { response, result } = await requestJSON({
         api: "responses", provider: config.provider, model: config.model,
         url: `${config.baseURL.replace(/\/$/, "")}/responses`,
@@ -157,11 +173,7 @@ export function createResponsesAdapter(config: Config): LLMAdapter {
           ...(config.reasoningEffort ? { reasoning: { effort: config.reasoningEffort } } : {}),
           ...(request.system ? { instructions: request.system } : {}),
           input: request.messages.flatMap((message) => toInput(message, config)),
-          ...(request.tools.length ? { tools: request.tools.map((tool) => ({
-            type: "function", name: tool.name, description: tool.description, parameters: tool.parameters,
-            // 선택 인자를 강제 필수로 바꾸지 않는다. 기존 ToolManager에서 원래 스키마로 검증한다.
-            strict: false,
-          })) } : {}),
+          ...(tools.length ? { tools } : {}),
           ...(config.supportsMaxOutputTokens !== false && request.maxOutputTokens !== undefined
             ? { max_output_tokens: request.maxOutputTokens } : {}),
         },

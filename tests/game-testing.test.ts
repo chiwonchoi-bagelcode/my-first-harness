@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as yieldNow } from "node:timers/promises";
@@ -9,7 +9,7 @@ import { createGameTestingPlugin } from "../tools/game-testing.ts";
 import { createHarnessPaths } from "../harness-paths.ts";
 import { ToolManager } from "../tool-manager.ts";
 import { solidPng } from "./image-fixture.ts";
-import type { GameBridge, TabInfo } from "../game-testing/bridge.ts";
+import type { GameBridge, GameStateResult, TabInfo } from "../game-testing/bridge.ts";
 import type { ContentBlock } from "../llm-types.ts";
 
 // 가짜 현실 시계다. sleep이 시간을 흘리고 실제 이벤트 루프에는 한 번만 양보한다.
@@ -20,7 +20,9 @@ function fakeClock() {
 
 // 컨트롤러 대신 호출 순서를 기록하고 runFor 겹침·소요 시간·실패를 흉내 내는 브리지다.
 function fakeBridge(clock: ReturnType<typeof fakeClock>, options: { tabs?: TabInfo[]; runForRealMs?: () => number; failAtRunFor?: number;
-  screenshotColor?: (state: { runFors: number; shots: number }) => [number, number, number] } = {}) {
+  screenshotColor?: (state: { runFors: number; shots: number }) => [number, number, number];
+  // 게임 상태 계약의 응답. 생략하면 계약이 없는 게임이고, stateThrows는 컨트롤러에 닿지 못하는 상황이다. onKeyDown은 가짜 게임이 키에 반응하게 한다.
+  state?: () => GameStateResult; stateThrows?: boolean; onKeyDown?: (key: string) => void } = {}) {
   const calls: string[] = [];
   let busy = false;
   let overlaps = 0;
@@ -41,9 +43,14 @@ function fakeBridge(clock: ReturnType<typeof fakeClock>, options: { tabs?: TabIn
       } finally { busy = false; }
     },
     async resume() { calls.push("resume"); },
-    async keyDown(_tab, key) { calls.push(`down:${key}`); },
+    async keyDown(_tab, key) { calls.push(`down:${key}`); options.onKeyDown?.(key); },
     async keyUp(_tab, key) { calls.push(`up:${key}`); },
     async screenshot() { shots++; calls.push("shot"); return solidPng(options.screenshotColor?.({ runFors, shots }) ?? [255, 0, 0]); },
+    async state() {
+      calls.push("state");
+      if (options.stateThrows) throw new Error("controller gone");
+      return options.state?.() ?? { ok: false, reason: "missing" };
+    },
   };
   return { bridge, calls, overlaps: () => overlaps, steps: () => calls.filter((call) => call.startsWith("runFor:")).map((call) => Number(call.slice(7))) };
 }
@@ -279,7 +286,7 @@ test("observationId를 넘긴 act는 캡처 완료 → keydown 전송까지의 �
   await run.pause();
   const observed = await run.observe();
   assert.match(observed.observationId, /^ob-/);
-  assert.equal(observed.imageHash.length, 16);
+  assert.equal(observed.imageHash?.length, 16);
   clock.advance(750);
   run.resume();
   const result = await run.act([{ keys: ["ArrowLeft"], holdGameMs: 5 }], undefined, observed.observationId);
@@ -356,4 +363,87 @@ test("act는 입력 시퀀스를 게임 시간 순서로 실행하고 간격을 
   assert.deepEqual(keyEvents, ["down:ArrowLeft", "up:ArrowLeft", "down:ArrowLeft", "up:ArrowLeft", "down:ArrowUp", "down:z", "up:ArrowUp", "up:z"]);
   assert.ok(result.realMs >= (10 + 10 + 30 + 5) / 0.1 - 100, `현실 소요 ${result.realMs}`);
   assert.deepEqual(run.status().heldKeys, []);
+});
+
+test("observe는 text·both에서 상태 계약을 읽고 image에서는 스크린샷만 찍으며, 계약 없음·게임 함수 오류는 lost로 만들지 않는다", async (t) => {
+  const clock = fakeClock();
+  let ticks = 0;
+  const contract = fakeBridge(clock, { state: () => ({ ok: true, state: { ticks: ++ticks, x: 200, board: ["....", "..##"] }, controls: { left: "ArrowLeft" } }) });
+  const run = createTestRun({ bridge: contract.bridge, tab: 0, rate: 0.1, now: clock.now, sleep: clock.sleep });
+  t.after(() => run.stop().catch(() => {}));
+  run.resume();
+  await turns(4);
+  const text = await run.observe("text");
+  assert.equal(text.format, "text");
+  assert.deepEqual(text.state, { ticks: 1, x: 200, board: ["....", "..##"] });
+  assert.deepEqual(text.controls, { left: "ArrowLeft" });
+  assert.equal(text.image, undefined);
+  assert.equal(text.imageHash, undefined);
+  assert.match(text.observationId, /^ob-/);
+  assert.equal(contract.calls.filter((call) => call === "shot").length, 0, "text 관찰은 스크린샷을 찍지 않는다.");
+  const both = await run.observe("both");
+  assert.equal(both.format, "both");
+  assert.deepEqual(both.state, { ticks: 2, x: 200, board: ["....", "..##"] });
+  assert.equal(both.image?.type, "image");
+  assert.equal(both.imageHash?.length, 16);
+  const image = await run.observe();
+  assert.equal(image.format, "image");
+  assert.equal("state" in image, false);
+  assert.equal(image.image?.type, "image");
+  // 텍스트 관찰의 ID도 act의 관찰→입력 지연 계산에 쓰인다.
+  clock.advance(500);
+  const acted = await run.act([{ keys: ["ArrowLeft"], holdGameMs: 5 }], undefined, text.observationId);
+  assert.ok(acted.observationToInputMs! >= 500, `지연 ${acted.observationToInputMs}`);
+
+  // 계약이 없는 게임: 이미지 관찰로 안내하는 오류이며 테스트는 계속 진행 중이다.
+  const missing = fakeBridge(clock);
+  const missingRun = createTestRun({ bridge: missing.bridge, tab: 0, rate: 0.1, now: clock.now, sleep: clock.sleep });
+  t.after(() => missingRun.stop().catch(() => {}));
+  missingRun.resume();
+  await assert.rejects(missingRun.observe("text"), /상태 계약[\s\S]*format: "image"/);
+  assert.equal(missingRun.status().mode, "running", "계약 없음은 제어 상실이 아니다.");
+  assert.equal((await missingRun.observe("image")).image?.type, "image");
+
+  // 게임의 getState()가 예외를 낸 경우도 게임 쪽 문제로 알린다.
+  const broken = fakeBridge(clock, { state: () => ({ ok: false, reason: "error", message: "board is undefined" }) });
+  const brokenRun = createTestRun({ bridge: broken.bridge, tab: 0, rate: 0.1, now: clock.now, sleep: clock.sleep });
+  t.after(() => brokenRun.stop().catch(() => {}));
+  brokenRun.resume();
+  await assert.rejects(brokenRun.observe("text"), /getState\(\)가 오류[\s\S]*board is undefined/);
+  assert.equal(brokenRun.status().mode, "running");
+
+  // 컨트롤러에 닿지 못하면 다른 명령과 같이 제어 상실이다.
+  const gone = fakeBridge(clock, { stateThrows: true });
+  const goneRun = createTestRun({ bridge: gone.bridge, tab: 0, rate: 0.1, now: clock.now, sleep: clock.sleep });
+  t.after(() => goneRun.stop().catch(() => {}));
+  goneRun.resume();
+  await assert.rejects(goneRun.observe("text"), /controller gone/);
+  assert.equal(goneRun.status().mode, "lost");
+});
+
+test("gameTestObserve 툴은 format에 따라 상태 JSON 문자열 또는 텍스트+이미지 블록을 돌려주고 잘못된 형식은 거부한다", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "harness-game-testing-observe-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const paths = createHarnessPaths(directory, join(directory, "home"));
+  const url = "http://127.0.0.1:1/game";
+  const { bridge } = fakeBridge(fakeClock(), { tabs: [{ tab: 0, url, closed: false }], state: () => ({ ok: true, state: { board: ["....", "#..."], phase: "playing" } }) });
+  const plugin = createGameTestingPlugin(paths, { bridge });
+  const manager = new ToolManager();
+  const cleanup = await plugin.setup({ register: (tool) => manager.register(tool, { owner: "plugins:game-testing" }) });
+  const started = JSON.parse(String((await manager.execute("gameTestStart", JSON.stringify({ url, rate: 1 }))).content));
+  const text = await manager.execute("gameTestObserve", JSON.stringify({ testId: started.testId, format: "text" }));
+  assert.equal(text.isError, undefined, String(text.content));
+  assert.equal(typeof text.content, "string", "상태만 있으면 문자열 결과다.");
+  const info = JSON.parse(String(text.content));
+  assert.deepEqual(info.state, { board: ["....", "#..."], phase: "playing" });
+  assert.equal(info.format, "text");
+  assert.equal("image" in info, false);
+  const both = await manager.execute("gameTestObserve", JSON.stringify({ testId: started.testId, format: "both" }));
+  assert.ok(Array.isArray(both.content) && (both.content as ContentBlock[])[1].type === "image");
+  assert.deepEqual(JSON.parse(((both.content as ContentBlock[])[0] as { text: string }).text).state, { board: ["....", "#..."], phase: "playing" });
+  const image = await manager.execute("gameTestObserve", JSON.stringify({ testId: started.testId }));
+  assert.ok(Array.isArray(image.content), "기본은 이미지 블록을 포함한 배열이다.");
+  const bad = await manager.execute("gameTestObserve", JSON.stringify({ testId: started.testId, format: "pixels" }));
+  assert.match(String(bad.content), /툴 인자 오류/);
+  if (typeof cleanup === "function") await cleanup();
 });

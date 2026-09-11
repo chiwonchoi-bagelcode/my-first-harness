@@ -33,6 +33,25 @@ function hashOf(png: Buffer) {
 // 한 번의 입력이다. keys를 동시에 누르고 holdGameMs(게임 시간) 뒤 놓은 다음, gapGameMs가 지나야 다음 입력으로 넘어간다.
 export type ActInput = { keys: string[]; holdGameMs: number; gapGameMs?: number };
 
+// gameTestAct의 inputs 인자와 플레이 두뇌의 응답이 같이 따르는 입력 시퀀스 스키마다.
+export const ACT_INPUTS_SCHEMA = {
+  type: "array", minItems: 1, maxItems: 16, description: "Inputs in order.",
+  items: { type: "object", properties: {
+    keys: { type: "array", items: { type: "string", minLength: 1 }, minItems: 1, maxItems: 4, description: "Playwright key names pressed together, e.g. ArrowLeft, ArrowUp, Space, z. Repeat a key as separate inputs, not twice in one input." },
+    holdGameMs: { type: "integer", minimum: 1, maximum: 5_000, description: "Game ms to hold before release. Use a small value (1–50) for a tap." },
+    gapGameMs: { type: "integer", minimum: 0, maximum: 5_000, description: "Game ms to wait after release before the next input (e.g. 50 so the game sees separate presses). Default 0." },
+  }, required: ["keys", "holdGameMs"], additionalProperties: false },
+};
+
+// 관찰 형식이다. image는 스크린샷, text는 게임의 상태 계약(window.__gameTest.getState) JSON, both는 둘 다.
+export type ObserveFormat = "image" | "text" | "both";
+
+// 관찰 결과다. state·controls는 text/both에서, image·imageHash는 image/both에서만 있다.
+export type Observation = {
+  observationId: string; gameTimeMs: number; mode: TestRunMode; format: ObserveFormat;
+  state?: unknown; controls?: unknown; imageHash?: string; image?: ImageBlock;
+};
+
 // 게임 시간이 특정 시각에 도달하기를 기다리는 호출자다. 입력 사이 간격에 쓴다.
 type GameTimer = { atGameMs: number; resolve: () => void; reject: (error: Error) => void };
 
@@ -177,6 +196,19 @@ export function createTestRun(options: TestRunOptions) {
     try { return await bridge.screenshot(tab); } catch (cause) { markLost(cause); throw cause; }
   }
 
+  // 게임의 상태 계약을 읽는다. 컨트롤러에 닿지 못하면 제어 상실이지만, 계약이 없거나 게임 함수가 실패한 것은 테스트를 잃은 것이 아니라
+  // 모델이 다음에 할 일(이미지 관찰로 전환, 계약 추가)을 담은 오류로 돌려준다.
+  async function readState() {
+    let result;
+    try { result = await bridge.state(tab); } catch (cause) { markLost(cause); throw cause; }
+    if (result.ok) return result;
+    if (result.reason === "missing") {
+      throw new Error("이 게임에는 상태 계약(window.__gameTest.getState)이 없습니다. gameTestObserve를 format: \"image\"로 쓰거나, game-testing 스킬의 '테스트 가능한 게임' 절을 따라 게임에 getState를 추가한 뒤 다시 시도하세요.");
+    }
+    if (result.reason === "error") throw new Error(`게임의 getState()가 오류를 냈습니다: ${result.message ?? "(메시지 없음)"}. 게임 코드를 확인하거나 format: "image"로 관찰하세요.`);
+    throw new Error(result.message ?? "getState() 결과가 너무 큽니다.");
+  }
+
   return {
     testId, status, resume, pause, advance,
     // 시계 제어가 이 게임에 적용되는지 확인한다: 정지 중 두 화면이 같고, 게임 시간을 진행한 뒤 화면이 달라져야 한다. 확인 전 상태로 돌려놓는다.
@@ -252,18 +284,24 @@ export function createTestRun(options: TestRunOptions) {
       return { inputs: results, pressedAtGameMs: results[0].pressedAtGameMs, releasedAtGameMs: results.at(-1)!.releasedAtGameMs,
         realMs: Math.round(now() - startedReal), ...latency };
     },
-    // 현재 화면을 찍어 공통 이미지 블록과 관찰 ID, 관찰 시점 게임 시간, 화면 해시를 돌려주고 캡처 시각을 기억한다.
-    async observe(): Promise<{ observationId: string; gameTimeMs: number; mode: TestRunMode; imageHash: string; image: ImageBlock }> {
+    // 현재 상태를 관찰한다. text는 게임의 상태 계약 JSON, image는 스크린샷(공통 이미지 블록과 해시), both는 둘 다.
+    // 관찰 ID와 관찰 시점 게임 시간을 함께 돌려주고, 마지막 읽기가 끝난 시각을 캡처 시각으로 기억해 Act의 관찰→입력 지연 계산에 쓴다.
+    async observe(format: ObserveFormat = "image"): Promise<Observation> {
       if (mode === "stopped" || mode === "lost") throw new Error(`${mode} 상태의 테스트는 관찰할 수 없습니다.`);
-      const png = await screenshot();
+      const stateResult = format === "image" ? undefined : await readState();
+      const png = format === "text" ? undefined : await screenshot();
       const capturedAtReal = now();
       const capturedGameTimeMs = gameTimeMs;
-      const image = await imageFromBytes(png);
+      const image = png ? await imageFromBytes(png) : undefined;
       const observationId = `ob-${randomUUID().slice(0, 8)}`;
       observations.set(observationId, { capturedAtReal, gameTimeMs: capturedGameTimeMs });
       // 오래된 관찰은 지연 계산에 쓰이지 않으므로 최근 50개만 남긴다.
       if (observations.size > 50) observations.delete(observations.keys().next().value!);
-      return { observationId, gameTimeMs: capturedGameTimeMs, mode, imageHash: hashOf(png), image: { ...image, name: `game-observe-${capturedGameTimeMs}.png` } };
+      return {
+        observationId, gameTimeMs: capturedGameTimeMs, mode, format,
+        ...(stateResult ? { state: stateResult.state, ...(stateResult.controls !== undefined ? { controls: stateResult.controls } : {}) } : {}),
+        ...(png && image ? { imageHash: hashOf(png), image: { ...image, name: `game-observe-${capturedGameTimeMs}.png` } } : {}),
+      };
     },
     // 진행 정지 → 누른 키 해제 → 시계 재개 순서로 되돌린다. 이미 끝났으면 다시 하지 않는다.
     async stop() {
